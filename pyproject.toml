@@ -64,9 +64,9 @@ all = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/iampramodphuyal/http-client"
-Repository = "https://github.com/iampramodphuyal/http-client"
-Issues = "https://github.com/iampramodphuyal/http-client/issues"
+Homepage = "https://github.com/iampramodphuyal/httphandler"
+Repository = "https://github.com/iampramodphuyal/httphandler"
+Issues = "https://github.com/iampramodphuyal/httphandler/issues"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -18,14 +18,26 @@ A Python HTTP client package designed for web scraping, supporting both asyncio 
 
 ## Installation
 
+### From Git (Recommended)
+
 ```bash
-pip install http-client
+# Install latest version
+pip install git+https://github.com/iampramodphuyal/httphandler.git
 
-# Or with httpx fallback support
-pip install http-client[httpx]
+# Install specific version
+pip install git+https://github.com/iampramodphuyal/httphandler.git@v0.1.0
 
-# Or for development
-pip install http-client[dev]
+# With optional extras
+pip install "http-client[stealth] @ git+https://github.com/iampramodphuyal/httphandler.git@v0.1.0"
+pip install "http-client[all] @ git+https://github.com/iampramodphuyal/httphandler.git@v0.1.0"
+```
+
+### For Development
+
+```bash
+git clone https://github.com/iampramodphuyal/httphandler.git
+cd httphandler
+pip install -e ".[dev]"
 ```
 
 ## Quick Start
@@ -319,8 +331,8 @@ http_client/
 
 ```bash
 # Clone the repository
-git clone https://github.com/iampramodphuyal/http-client.git
-cd http-client
+git clone https://github.com/iampramodphuyal/httphandler.git
+cd httphandler
 
 # Create virtual environment
 python -m venv venv
