@@ -1,35 +1,37 @@
 """HTTP client package for web scraping with dual execution model support.
 
-This package provides a unified HTTP client interface supporting both
-asyncio and ThreadPoolExecutor execution models with:
+This package provides two interfaces:
 
-- TLS fingerprint impersonation via curl_cffi
-- Thread-safe and async-safe rate limiting
-- Proxy pool with rotation strategies and health tracking
-- Optional cookie persistence
-- Retry logic with exponential backoff
-- Two operating modes: "speed" and "stealth"
+1. **HTTPHandler** (Simple) - For straightforward HTTP requests:
+   - Session persistence control
+   - Response helper methods
+   - Header and proxy management
+   - Streaming support
 
-Basic usage:
+2. **ScraperClient** (Advanced) - For complex scraping needs:
+   - TLS fingerprint impersonation via curl_cffi
+   - Thread-safe and async-safe rate limiting
+   - Proxy pool with rotation strategies
+   - Browser profile emulation
 
-    # Simple sync request
+Simple usage (HTTPHandler):
+
+    from http_client import HTTPHandler
+
+    handler = HTTPHandler()
+    resp = handler.get("https://example.com", headers={"User-Agent": "MyApp/1.0"})
+    print(handler.get_status_code())
+    print(handler.get_cookies())
+
+    # Session management
+    handler.persist_session = True
+    handler.get("https://example.com/login")
+    handler.get("https://example.com/dashboard")  # Cookies maintained
+    handler.reset_session()  # Clear for new session
+
+Advanced usage (ScraperClient):
+
     from http_client import ScraperClient
-
-    client = ScraperClient()
-    response = client.get("https://example.com")
-    print(response.text)
-
-    # Simple async request
-    async with ScraperClient() as client:
-        response = await client.get_async("https://example.com")
-        print(response.text)
-
-    # Batch operations
-    with ScraperClient(max_workers=20) as client:
-        results = client.gather_sync(["https://example.com/1", "https://example.com/2"])
-
-    async with ScraperClient() as client:
-        results = await client.gather_async(urls, concurrency=50)
 
     # Stealth mode with cookies and proxies
     client = ScraperClient(
@@ -38,10 +40,16 @@ Basic usage:
         profile="chrome_120",
         proxies=["socks5://proxy1:1080"],
     )
+    response = client.get("https://example.com")
+
+    # Batch operations
+    async with ScraperClient() as client:
+        results = await client.gather_async(urls, concurrency=50)
 """
 
 from .client import ScraperClient
 from .config import ClientConfig
+from .handler import HTTPHandler, NoResponseError
 from .models import (
     Request,
     Response,
@@ -70,7 +78,9 @@ from .safety import (
 __version__ = "0.1.0"
 
 __all__ = [
-    # Main client
+    # Simple interface
+    "HTTPHandler",
+    # Advanced interface
     "ScraperClient",
     # Configuration
     "ClientConfig",
@@ -85,6 +95,7 @@ __all__ = [
     "RateLimitExceeded",
     "AllProxiesFailed",
     "MaxRetriesExceeded",
+    "NoResponseError",
     # Fingerprinting
     "BrowserProfile",
     "PROFILES",
