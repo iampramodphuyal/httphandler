@@ -14,6 +14,7 @@ from ..models import (
     AllProxiesFailed,
     BatchResult,
     MaxRetriesExceeded,
+    RateLimitExceeded,
     Request,
     Response,
     TransportError,
@@ -89,6 +90,9 @@ class ThreadBackend(BaseBackend):
 
         # Thread pool
         self._executor: ThreadPoolExecutor | None = None
+
+        # Closed state flag
+        self._closed = False
 
     def _get_executor(self) -> ThreadPoolExecutor:
         """Get or create thread pool executor."""
@@ -224,32 +228,30 @@ class ThreadBackend(BaseBackend):
 
         Returns:
             Response object.
+
+        Raises:
+            RateLimitExceeded: If rate limit cannot be acquired (non-blocking mode).
         """
         # Apply stealth delay before request
         self._apply_stealth_delay()
 
-        # Rate limiting
+        # Rate limiting (blocking=True means it will wait for token)
         if self._rate_limiter:
-            self._rate_limiter.acquire_sync(request.url)
+            acquired = self._rate_limiter.acquire_sync(request.url, blocking=True)
+            if not acquired:
+                # This shouldn't happen with blocking=True, but handle it safely
+                from urllib.parse import urlparse
+                domain = urlparse(request.url).netloc
+                raise RateLimitExceeded(domain=domain)
 
         # Prepare request
         prepared = self._prepare_request(request)
 
-        # Get cookies from store
+        # Get cookies from store and merge with request cookies
         store_cookies = self._get_cookies_for_request(request.url)
         if store_cookies:
             merged_cookies = {**store_cookies, **(prepared.cookies or {})}
-            prepared = Request(
-                method=prepared.method,
-                url=prepared.url,
-                headers=prepared.headers,
-                params=prepared.params,
-                data=prepared.data,
-                json=prepared.json,
-                cookies=merged_cookies,
-                timeout=prepared.timeout,
-                proxy=prepared.proxy,
-            )
+            prepared = prepared.with_cookies(merged_cookies)
 
         # Get proxy
         proxy_url: str | None = None
@@ -380,6 +382,10 @@ class ThreadBackend(BaseBackend):
 
     def close(self) -> None:
         """Close resources synchronously."""
+        if self._closed:
+            return
+        self._closed = True
+
         if self._executor is not None:
             self._executor.shutdown(wait=True)
             self._executor = None
@@ -388,6 +394,10 @@ class ThreadBackend(BaseBackend):
 
     async def close_async(self) -> None:
         """Close async resources."""
+        if self._closed:
+            return
+        self._closed = True
+
         if self._executor is not None:
             self._executor.shutdown(wait=False)
             self._executor = None

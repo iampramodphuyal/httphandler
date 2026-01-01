@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 import time
+import warnings
 from typing import Any
 
 from ..models import Request, Response, TransportError
 from .base import BaseTransport
+
+# Logger for transport-level warnings
+logger = logging.getLogger(__name__)
 
 # Try to import curl_cffi, fall back to httpx if unavailable
 try:
@@ -41,6 +46,7 @@ class CurlTransport(BaseTransport):
         impersonate: str | None = None,
         default_timeout: float = 30.0,
         connect_timeout: float = 10.0,
+        http_version: str = "auto",
     ):
         """Initialize curl transport.
 
@@ -48,10 +54,12 @@ class CurlTransport(BaseTransport):
             impersonate: Browser to impersonate (e.g., "chrome120", "firefox121").
             default_timeout: Default request timeout.
             connect_timeout: Connection timeout.
+            http_version: HTTP version - "1.1", "2", or "auto".
         """
         super().__init__(impersonate, default_timeout, connect_timeout)
 
         self._using_curl = CURL_AVAILABLE
+        self._http_version = http_version
         self._sync_session: Any = None
         self._async_session: Any = None
 
@@ -61,14 +69,47 @@ class CurlTransport(BaseTransport):
                 "Install one of them: pip install curl_cffi or pip install httpx"
             )
 
+        # Warn about TLS fingerprinting degradation
+        if not CURL_AVAILABLE and impersonate:
+            warning_msg = (
+                f"TLS fingerprinting requested (impersonate='{impersonate}') but curl_cffi "
+                "is not available. Falling back to httpx which does NOT support TLS "
+                "fingerprinting. Your requests may be detected as non-browser traffic. "
+                "Install curl_cffi for stealth mode: pip install curl_cffi"
+            )
+            warnings.warn(warning_msg, UserWarning, stacklevel=2)
+            logger.warning(warning_msg)
+
     def _get_sync_session(self) -> Any:
         """Get or create sync session."""
         if self._sync_session is None:
             if self._using_curl:
-                self._sync_session = Session(impersonate=self._impersonate)
+                # curl_cffi session with optional HTTP version
+                session_kwargs: dict[str, Any] = {}
+                if self._impersonate:
+                    session_kwargs["impersonate"] = self._impersonate
+
+                # Set HTTP version if specified
+                if self._http_version == "2":
+                    try:
+                        from curl_cffi import CurlHttpVersion
+                        session_kwargs["http_version"] = CurlHttpVersion.V2
+                    except ImportError:
+                        pass  # Older curl_cffi, use default
+                elif self._http_version == "1.1":
+                    try:
+                        from curl_cffi import CurlHttpVersion
+                        session_kwargs["http_version"] = CurlHttpVersion.V1_1
+                    except ImportError:
+                        pass
+
+                self._sync_session = Session(**session_kwargs)
             else:
+                # httpx client with HTTP/2 support
+                http2_enabled = self._http_version in ("2", "auto")
                 self._sync_session = httpx.Client(
-                    timeout=httpx.Timeout(self._default_timeout, connect=self._connect_timeout)
+                    timeout=httpx.Timeout(self._default_timeout, connect=self._connect_timeout),
+                    http2=http2_enabled,
                 )
         return self._sync_session
 
@@ -76,10 +117,32 @@ class CurlTransport(BaseTransport):
         """Get or create async session."""
         if self._async_session is None:
             if self._using_curl:
-                self._async_session = AsyncSession(impersonate=self._impersonate)
+                # curl_cffi async session with optional HTTP version
+                session_kwargs: dict[str, Any] = {}
+                if self._impersonate:
+                    session_kwargs["impersonate"] = self._impersonate
+
+                # Set HTTP version if specified
+                if self._http_version == "2":
+                    try:
+                        from curl_cffi import CurlHttpVersion
+                        session_kwargs["http_version"] = CurlHttpVersion.V2
+                    except ImportError:
+                        pass  # Older curl_cffi, use default
+                elif self._http_version == "1.1":
+                    try:
+                        from curl_cffi import CurlHttpVersion
+                        session_kwargs["http_version"] = CurlHttpVersion.V1_1
+                    except ImportError:
+                        pass
+
+                self._async_session = AsyncSession(**session_kwargs)
             else:
+                # httpx async client with HTTP/2 support
+                http2_enabled = self._http_version in ("2", "auto")
                 self._async_session = httpx.AsyncClient(
-                    timeout=httpx.Timeout(self._default_timeout, connect=self._connect_timeout)
+                    timeout=httpx.Timeout(self._default_timeout, connect=self._connect_timeout),
+                    http2=http2_enabled,
                 )
         return self._async_session
 
@@ -143,19 +206,22 @@ class CurlTransport(BaseTransport):
             headers = dict(raw_response.headers)
             cookies = dict(raw_response.cookies) if raw_response.cookies else {}
 
-            return Response(
-                status_code=raw_response.status_code,
-                headers=headers,
-                content=raw_response.content,
-                url=str(raw_response.url),
-                cookies=cookies,
-                elapsed=elapsed,
-                request=request,
-            )
-        else:
-            # httpx response
-            headers = dict(raw_response.headers)
-            cookies = dict(raw_response.cookies) if raw_response.cookies else {}
+            # Extract redirect history
+            history: list[Response] = []
+            if hasattr(raw_response, "history") and raw_response.history:
+                for hist_resp in raw_response.history:
+                    hist_headers = dict(hist_resp.headers)
+                    hist_cookies = dict(hist_resp.cookies) if hist_resp.cookies else {}
+                    history.append(Response(
+                        status_code=hist_resp.status_code,
+                        headers=hist_headers,
+                        content=hist_resp.content if hasattr(hist_resp, "content") else b"",
+                        url=str(hist_resp.url),
+                        cookies=hist_cookies,
+                        elapsed=0.0,
+                        request=request,
+                        history=[],
+                    ))
 
             return Response(
                 status_code=raw_response.status_code,
@@ -165,6 +231,39 @@ class CurlTransport(BaseTransport):
                 cookies=cookies,
                 elapsed=elapsed,
                 request=request,
+                history=history,
+            )
+        else:
+            # httpx response
+            headers = dict(raw_response.headers)
+            cookies = dict(raw_response.cookies) if raw_response.cookies else {}
+
+            # Extract redirect history
+            history: list[Response] = []
+            if hasattr(raw_response, "history") and raw_response.history:
+                for hist_resp in raw_response.history:
+                    hist_headers = dict(hist_resp.headers)
+                    hist_cookies = dict(hist_resp.cookies) if hist_resp.cookies else {}
+                    history.append(Response(
+                        status_code=hist_resp.status_code,
+                        headers=hist_headers,
+                        content=hist_resp.content if hasattr(hist_resp, "content") else b"",
+                        url=str(hist_resp.url),
+                        cookies=hist_cookies,
+                        elapsed=0.0,
+                        request=request,
+                        history=[],
+                    ))
+
+            return Response(
+                status_code=raw_response.status_code,
+                headers=headers,
+                content=raw_response.content,
+                url=str(raw_response.url),
+                cookies=cookies,
+                elapsed=elapsed,
+                request=request,
+                history=history,
             )
 
     def request_sync(

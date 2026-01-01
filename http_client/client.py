@@ -74,6 +74,7 @@ class ScraperClient:
         verify_ssl: bool | None = None,
         follow_redirects: bool | None = None,
         max_redirects: int | None = None,
+        http_version: str | None = None,
         default_headers: dict[str, str] | None = None,
     ):
         """Initialize ScraperClient.
@@ -100,8 +101,18 @@ class ScraperClient:
             verify_ssl: Whether to verify SSL certificates.
             follow_redirects: Whether to follow redirects.
             max_redirects: Maximum redirects to follow.
+            http_version: HTTP version - "1.1", "2", or "auto".
             default_headers: Default headers for all requests.
         """
+        # Validate profile name early (fail fast on invalid profile)
+        profile_to_validate = profile if profile is not None else (
+            config.profile if config is not None else "chrome_120"
+        )
+        try:
+            get_profile(profile_to_validate)
+        except ValueError as e:
+            raise ValueError(f"Invalid profile configuration: {e}") from e
+
         # Build config from kwargs or use provided config
         if config is None:
             config_kwargs = {}
@@ -145,6 +156,8 @@ class ScraperClient:
                 config_kwargs["follow_redirects"] = follow_redirects
             if max_redirects is not None:
                 config_kwargs["max_redirects"] = max_redirects
+            if http_version is not None:
+                config_kwargs["http_version"] = http_version
             if default_headers is not None:
                 config_kwargs["default_headers"] = default_headers
 
@@ -179,6 +192,7 @@ class ScraperClient:
             impersonate=impersonate,
             default_timeout=self._config.timeout,
             connect_timeout=self._config.connect_timeout,
+            http_version=self._config.http_version,
         )
 
         # Create backends sharing the same primitives

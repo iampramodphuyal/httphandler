@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import random
+import threading
 import time
 from typing import Any, Sequence
 
@@ -13,6 +15,7 @@ from ..models import (
     AllProxiesFailed,
     BatchResult,
     MaxRetriesExceeded,
+    RateLimitExceeded,
     Request,
     Response,
     TransportError,
@@ -28,6 +31,10 @@ class AsyncBackend(BaseBackend):
     Integrates transport, rate limiting, proxy management, and cookie
     storage for async execution model.
     """
+
+    # Shared executor for sync calls from async context (class-level)
+    _sync_executor: "concurrent.futures.ThreadPoolExecutor | None" = None
+    _executor_lock: "threading.Lock | None" = None
 
     def __init__(
         self,
@@ -214,32 +221,30 @@ class AsyncBackend(BaseBackend):
 
         Returns:
             Response object.
+
+        Raises:
+            RateLimitExceeded: If rate limit cannot be acquired (non-blocking mode).
         """
         # Apply stealth delay before request
         await self._apply_stealth_delay()
 
-        # Rate limiting
+        # Rate limiting (blocking=True means it will wait for token)
         if self._rate_limiter:
-            await self._rate_limiter.acquire_async(request.url)
+            acquired = await self._rate_limiter.acquire_async(request.url, blocking=True)
+            if not acquired:
+                # This shouldn't happen with blocking=True, but handle it safely
+                from urllib.parse import urlparse
+                domain = urlparse(request.url).netloc
+                raise RateLimitExceeded(domain=domain)
 
         # Prepare request
         prepared = self._prepare_request(request)
 
-        # Get cookies from store
+        # Get cookies from store and merge with request cookies
         store_cookies = await self._get_cookies_for_request(request.url)
         if store_cookies:
             merged_cookies = {**store_cookies, **(prepared.cookies or {})}
-            prepared = Request(
-                method=prepared.method,
-                url=prepared.url,
-                headers=prepared.headers,
-                params=prepared.params,
-                data=prepared.data,
-                json=prepared.json,
-                cookies=merged_cookies,
-                timeout=prepared.timeout,
-                proxy=prepared.proxy,
-            )
+            prepared = prepared.with_cookies(merged_cookies)
 
         # Get proxy
         proxy_url: str | None = None
@@ -267,6 +272,40 @@ class AsyncBackend(BaseBackend):
                 self._proxy_pool.report_failure(proxy.url)
             raise
 
+    @classmethod
+    def _get_sync_executor(cls) -> concurrent.futures.ThreadPoolExecutor:
+        """Get or create the shared thread pool executor for sync calls.
+
+        Uses double-checked locking to safely initialize the shared executor.
+
+        Returns:
+            Shared ThreadPoolExecutor instance.
+        """
+        if cls._sync_executor is None:
+            if cls._executor_lock is None:
+                cls._executor_lock = threading.Lock()
+            with cls._executor_lock:
+                if cls._sync_executor is None:
+                    cls._sync_executor = concurrent.futures.ThreadPoolExecutor(
+                        max_workers=4,
+                        thread_name_prefix="async_backend_sync",
+                    )
+        return cls._sync_executor
+
+    def _run_async_in_thread(self, request: Request) -> Response:
+        """Run execute_async in a new event loop (for use in thread).
+
+        This method is designed to be called from a thread pool worker.
+        It creates the coroutine fresh in the worker thread's context.
+
+        Args:
+            request: The request to execute.
+
+        Returns:
+            Response object.
+        """
+        return asyncio.run(self.execute_async(request))
+
     def execute_sync(self, request: Request) -> Response:
         """Execute a single request synchronously (runs async in new loop).
 
@@ -282,12 +321,14 @@ class AsyncBackend(BaseBackend):
             loop = None
 
         if loop is not None:
-            # We're in an async context, create task
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, self.execute_async(request))
-                return future.result()
+            # We're in an async context - run in thread pool with new event loop.
+            # Important: Don't create the coroutine here; let the worker thread
+            # create it in its own event loop context.
+            executor = self._get_sync_executor()
+            future = executor.submit(self._run_async_in_thread, request)
+            return future.result()
         else:
+            # No running loop, safe to use asyncio.run directly
             return asyncio.run(self.execute_async(request))
 
     async def gather_async(
@@ -334,6 +375,27 @@ class AsyncBackend(BaseBackend):
 
         return BatchResult(responses=responses, errors=errors)
 
+    def _run_gather_in_thread(
+        self,
+        requests: Sequence[Request],
+        stop_on_error: bool = False,
+    ) -> BatchResult:
+        """Run gather_async in a new event loop (for use in thread).
+
+        This method is designed to be called from a thread pool worker.
+        It creates the coroutine fresh in the worker thread's context.
+
+        Args:
+            requests: Sequence of requests to execute.
+            stop_on_error: Whether to stop on first error.
+
+        Returns:
+            BatchResult with responses and errors.
+        """
+        return asyncio.run(
+            self.gather_async(requests, stop_on_error=stop_on_error)
+        )
+
     def gather_sync(
         self,
         requests: Sequence[Request],
@@ -348,9 +410,38 @@ class AsyncBackend(BaseBackend):
         Returns:
             BatchResult with responses and errors.
         """
-        return asyncio.run(
-            self.gather_async(requests, stop_on_error=stop_on_error)
-        )
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop is not None:
+            # We're in an async context - run in thread pool with new event loop.
+            executor = self._get_sync_executor()
+            future = executor.submit(
+                self._run_gather_in_thread, requests, stop_on_error
+            )
+            return future.result()
+        else:
+            # No running loop, safe to use asyncio.run directly
+            return asyncio.run(
+                self.gather_async(requests, stop_on_error=stop_on_error)
+            )
+
+    @classmethod
+    def shutdown_executor(cls) -> None:
+        """Shut down the shared thread pool executor.
+
+        Call this when you're done with all AsyncBackend instances
+        to clean up the shared executor resources.
+        """
+        if cls._sync_executor is not None:
+            if cls._executor_lock is None:
+                cls._executor_lock = threading.Lock()
+            with cls._executor_lock:
+                if cls._sync_executor is not None:
+                    cls._sync_executor.shutdown(wait=True)
+                    cls._sync_executor = None
 
     async def close_async(self) -> None:
         """Close async resources."""

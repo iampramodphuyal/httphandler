@@ -82,6 +82,60 @@ class HeaderGenerator:
 
         return ordered
 
+    def _is_same_site(self, domain1: str, domain2: str) -> bool:
+        """Check if two domains are same-site (share registrable domain).
+
+        Uses a simple heuristic that works for most cases without requiring
+        a full public suffix list. Handles common multi-level TLDs.
+
+        Args:
+            domain1: First domain (netloc).
+            domain2: Second domain (netloc).
+
+        Returns:
+            True if domains are same-site.
+        """
+        if not domain1 or not domain2:
+            return False
+
+        # Remove port if present
+        domain1 = domain1.split(":")[0].lower()
+        domain2 = domain2.split(":")[0].lower()
+
+        # Exact match is same-origin, not just same-site, but counts
+        if domain1 == domain2:
+            return True
+
+        # Known multi-level TLDs (common ones)
+        multi_level_tlds = {
+            "co.uk", "org.uk", "gov.uk", "ac.uk",
+            "com.au", "org.au", "gov.au", "edu.au",
+            "co.nz", "org.nz", "gov.nz",
+            "co.jp", "or.jp", "ne.jp",
+            "com.br", "org.br", "gov.br",
+            "co.in", "org.in", "gov.in",
+            "com.cn", "org.cn", "gov.cn",
+        }
+
+        def get_registrable_domain(domain: str) -> str:
+            """Extract registrable domain (eTLD+1)."""
+            parts = domain.split(".")
+            if len(parts) < 2:
+                return domain
+
+            # Check for multi-level TLD
+            for tld in multi_level_tlds:
+                if domain.endswith("." + tld) or domain == tld:
+                    tld_parts = tld.split(".")
+                    if len(parts) > len(tld_parts):
+                        return ".".join(parts[-(len(tld_parts) + 1):])
+                    return domain
+
+            # Default: take last two parts
+            return ".".join(parts[-2:])
+
+        return get_registrable_domain(domain1) == get_registrable_domain(domain2)
+
     def _generate_sec_fetch(self, url: str, method: str) -> dict[str, str]:
         """Generate Sec-Fetch-* headers.
 
@@ -92,19 +146,32 @@ class HeaderGenerator:
         Returns:
             Dict of Sec-Fetch headers.
         """
-        parsed = urlparse(url)
+        try:
+            parsed = urlparse(url)
+        except Exception:
+            # If URL parsing fails, use safe defaults
+            return {
+                "Sec-Fetch-Site": "cross-site",
+                "Sec-Fetch-Mode": "navigate",
+                "Sec-Fetch-Dest": "document",
+            }
 
         # Determine fetch site
+        sec_fetch_site = "none"
         if self._last_referer:
-            last_parsed = urlparse(self._last_referer)
-            if last_parsed.netloc == parsed.netloc:
-                sec_fetch_site = "same-origin"
-            elif last_parsed.netloc.split(".")[-2:] == parsed.netloc.split(".")[-2:]:
-                sec_fetch_site = "same-site"
-            else:
+            try:
+                last_parsed = urlparse(self._last_referer)
+                if last_parsed.netloc and parsed.netloc:
+                    if last_parsed.netloc == parsed.netloc:
+                        sec_fetch_site = "same-origin"
+                    elif self._is_same_site(last_parsed.netloc, parsed.netloc):
+                        sec_fetch_site = "same-site"
+                    else:
+                        sec_fetch_site = "cross-site"
+                else:
+                    sec_fetch_site = "cross-site"
+            except Exception:
                 sec_fetch_site = "cross-site"
-        else:
-            sec_fetch_site = "none"
 
         # Determine fetch mode based on request type
         sec_fetch_mode = "navigate"

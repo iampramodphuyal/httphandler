@@ -1,6 +1,6 @@
 """Request and Response dataclasses."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from http.cookies import SimpleCookie
 
@@ -34,6 +34,19 @@ class Request:
     def __post_init__(self) -> None:
         """Normalize method to uppercase."""
         self.method = self.method.upper()
+
+    def with_cookies(self, cookies: dict[str, str]) -> "Request":
+        """Return a copy of this request with updated cookies.
+
+        Uses dataclasses.replace() for efficient shallow copy.
+
+        Args:
+            cookies: New cookies dict to set.
+
+        Returns:
+            New Request instance with updated cookies.
+        """
+        return replace(self, cookies=cookies)
 
 
 @dataclass

@@ -80,10 +80,27 @@ class CookieStore:
         self._async_lock: asyncio.Lock | None = None
 
     def _get_async_lock(self) -> asyncio.Lock:
-        """Lazily initialize async lock within event loop context."""
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
-        return self._async_lock
+        """Lazily initialize async lock within event loop context.
+
+        Creates lock on first async access. Thread-safe via _thread_lock.
+
+        Returns:
+            asyncio.Lock for async coordination.
+
+        Raises:
+            RuntimeError: If called outside an async context (no event loop).
+        """
+        # Use thread lock to safely check and create the async lock
+        with self._thread_lock:
+            if self._async_lock is None:
+                try:
+                    self._async_lock = asyncio.Lock()
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        "Cannot create asyncio.Lock outside of async context. "
+                        "Use synchronous methods for non-async access."
+                    ) from e
+            return self._async_lock
 
     def _normalize_domain(self, domain: str) -> str:
         """Normalize domain for storage key."""

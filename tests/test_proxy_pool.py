@@ -193,11 +193,17 @@ class TestProxyPool:
         pool = ProxyPool(proxies=["http://proxy:8080"], max_failures=3)
 
         proxy = pool.get_proxy()
-        proxy.consecutive_failures = 2
 
+        # Simulate some failures first (via report_failure)
+        pool.report_failure(proxy.url)
+        pool.report_failure(proxy.url)
+
+        # Now report success
         pool.report_success(proxy.url)
 
-        assert proxy.consecutive_failures == 0
+        # Check state via get_stats - failures should be reset
+        stats = pool.get_stats()
+        assert stats["proxies"][0]["consecutive_failures"] == 0
 
     def test_report_failure(self):
         """Test reporting failed request."""
@@ -206,9 +212,11 @@ class TestProxyPool:
         proxy = pool.get_proxy()
         pool.report_failure(proxy.url)
 
-        assert proxy.consecutive_failures == 1
-        assert proxy.total_failures == 1
-        assert proxy.enabled is True  # Not disabled yet
+        # Check state via get_stats - returned proxy is a copy
+        stats = pool.get_stats()
+        assert stats["proxies"][0]["consecutive_failures"] == 1
+        assert stats["proxies"][0]["enabled"] is True  # Not disabled yet
+        assert pool.available_count == 1  # Still available
 
     def test_auto_disable_on_failures(self):
         """Test proxy is disabled after max failures."""
@@ -220,7 +228,9 @@ class TestProxyPool:
         for _ in range(3):
             pool.report_failure(proxy.url)
 
-        assert proxy.enabled is False
+        # Check state via get_stats - returned proxy is a copy
+        stats = pool.get_stats()
+        assert stats["proxies"][0]["enabled"] is False
         assert pool.available_count == 0
 
     def test_auto_recovery(self):
@@ -237,7 +247,9 @@ class TestProxyPool:
         for _ in range(2):
             pool.report_failure(proxy.url)
 
-        assert proxy.enabled is False
+        # Check state via get_stats - returned proxy is a copy
+        stats = pool.get_stats()
+        assert stats["proxies"][0]["enabled"] is False
         assert pool.available_count == 0
 
         # Wait for cooldown

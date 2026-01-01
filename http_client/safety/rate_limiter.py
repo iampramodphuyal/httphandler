@@ -33,10 +33,27 @@ class TokenBucket:
         self._async_lock: asyncio.Lock | None = None
 
     def _get_async_lock(self) -> asyncio.Lock:
-        """Lazily initialize async lock within event loop context."""
-        if self._async_lock is None:
-            self._async_lock = asyncio.Lock()
-        return self._async_lock
+        """Lazily initialize async lock within event loop context.
+
+        Creates lock on first async access. Thread-safe via _thread_lock.
+
+        Returns:
+            asyncio.Lock for async coordination.
+
+        Raises:
+            RuntimeError: If called outside an async context (no event loop).
+        """
+        # Use thread lock to safely check and create the async lock
+        with self._thread_lock:
+            if self._async_lock is None:
+                try:
+                    self._async_lock = asyncio.Lock()
+                except RuntimeError as e:
+                    raise RuntimeError(
+                        "Cannot create asyncio.Lock outside of async context. "
+                        "Use acquire_sync() for synchronous access."
+                    ) from e
+            return self._async_lock
 
     def _refill(self) -> None:
         """Refill tokens based on elapsed time. Must be called under lock."""
@@ -162,12 +179,15 @@ class DomainRateLimiter:
         return parsed.netloc.lower()
 
     def _get_bucket(self, domain: str) -> TokenBucket | None:
-        """Get or create bucket for domain. Returns None if rate limiting disabled."""
-        rate = self._domain_rates.get(domain, self._default_rate)
-        if rate <= 0:
-            return None
+        """Get or create bucket for domain. Returns None if rate limiting disabled.
 
+        Thread-safe: reads rate and creates bucket under lock.
+        """
         with self._lock:
+            rate = self._domain_rates.get(domain, self._default_rate)
+            if rate <= 0:
+                return None
+
             if domain not in self._buckets:
                 self._buckets[domain] = TokenBucket(rate)
             return self._buckets[domain]

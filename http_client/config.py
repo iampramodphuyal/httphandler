@@ -31,6 +31,7 @@ class ClientConfig:
         verify_ssl: Whether to verify SSL certificates.
         follow_redirects: Whether to follow HTTP redirects.
         max_redirects: Maximum number of redirects to follow.
+        http_version: HTTP version to use - "1.1", "2", or "auto" (default).
     """
 
     # Operating mode
@@ -72,6 +73,9 @@ class ClientConfig:
     verify_ssl: bool = True
     follow_redirects: bool = True
     max_redirects: int = 10
+
+    # HTTP version selection
+    http_version: Literal["1.1", "2", "auto"] = "auto"
 
     # Default headers (merged with profile headers)
     default_headers: dict[str, str] = field(default_factory=dict)

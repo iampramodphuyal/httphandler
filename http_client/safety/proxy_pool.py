@@ -2,12 +2,62 @@
 
 from __future__ import annotations
 
+import copy
 import random
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Literal
 from urllib.parse import urlparse
+
+
+class InvalidProxyURLError(ValueError):
+    """Raised when a proxy URL is invalid."""
+
+    def __init__(self, url: str, reason: str):
+        self.url = url
+        self.reason = reason
+        super().__init__(f"Invalid proxy URL '{url}': {reason}")
+
+
+# Valid proxy schemes
+VALID_PROXY_SCHEMES = {"http", "https", "socks4", "socks5", "socks4a", "socks5h"}
+
+
+def validate_proxy_url(url: str) -> None:
+    """Validate a proxy URL.
+
+    Args:
+        url: Proxy URL to validate.
+
+    Raises:
+        InvalidProxyURLError: If the URL is invalid.
+    """
+    if not url or not isinstance(url, str):
+        raise InvalidProxyURLError(url, "URL must be a non-empty string")
+
+    try:
+        parsed = urlparse(url)
+    except Exception as e:
+        raise InvalidProxyURLError(url, f"Failed to parse URL: {e}") from e
+
+    # Check scheme
+    scheme = parsed.scheme.lower()
+    if not scheme:
+        raise InvalidProxyURLError(url, "Missing scheme (e.g., http://, socks5://)")
+
+    if scheme not in VALID_PROXY_SCHEMES:
+        raise InvalidProxyURLError(
+            url,
+            f"Invalid scheme '{scheme}'. Must be one of: {', '.join(sorted(VALID_PROXY_SCHEMES))}"
+        )
+
+    # Check host
+    if not parsed.hostname:
+        raise InvalidProxyURLError(url, "Missing hostname")
+
+    # Port is technically optional (defaults vary by scheme), but warn if missing
+    # We don't raise an error since some proxy configs use default ports
 
 
 @dataclass
@@ -98,6 +148,7 @@ class ProxyPool:
         self._proxies: list[Proxy] = []
         if proxies:
             for url in proxies:
+                validate_proxy_url(url)  # Fail fast on invalid URLs
                 self._proxies.append(Proxy(url=url))
 
     def add_proxy(self, url: str) -> None:
@@ -105,7 +156,11 @@ class ProxyPool:
 
         Args:
             url: Proxy URL to add.
+
+        Raises:
+            InvalidProxyURLError: If the URL is invalid.
         """
+        validate_proxy_url(url)  # Validate before acquiring lock
         with self._lock:
             # Don't add duplicates
             if not any(p.url == url for p in self._proxies):
@@ -143,8 +198,11 @@ class ProxyPool:
     def get_proxy(self) -> Proxy | None:
         """Get next proxy according to strategy.
 
+        Returns a shallow copy of the Proxy to prevent concurrent modification
+        issues. The caller should use proxy.url for report_success/report_failure.
+
         Returns:
-            Proxy object or None if no proxies available.
+            Copy of Proxy object or None if no proxies available.
         """
         with self._lock:
             available = self._get_available_proxies()
@@ -166,7 +224,10 @@ class ProxyPool:
 
             proxy.last_used = time.monotonic()
             proxy.total_requests += 1
-            return proxy
+
+            # Return a copy to prevent concurrent modification issues.
+            # Caller uses proxy.url for report_success/report_failure lookups.
+            return copy.copy(proxy)
 
     def report_success(self, proxy_url: str) -> None:
         """Report successful request through proxy.
