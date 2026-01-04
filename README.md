@@ -1,25 +1,15 @@
 # HTTP Client
 
-A Python HTTP client package for web scraping and API interactions, featuring two interfaces: a simple `HTTPHandler` for beginners and an advanced `ScraperClient` for complex scraping with TLS fingerprinting and stealth capabilities.
+A unified Python HTTP client with per-request backend switching between httpx and curl_cffi. Features shared cookie persistence, optional browser fingerprinting, and both sync/async support.
 
 ## Features
 
-### Simple Interface (HTTPHandler)
-- Clean, intuitive API for HTTP requests
-- Session persistence with `persist_session` flag
-- Response helpers: `get_status_code()`, `get_cookies()`, `get_headers()`, `get_bandwidth()`
-- Header and proxy management
-- Streaming downloads with progress callbacks
-- Context managers for automatic cleanup
-
-### Advanced Interface (ScraperClient)
-- **Dual Execution Model**: asyncio and ThreadPoolExecutor support
-- **TLS Fingerprinting**: Mimic real browsers (Chrome, Firefox, Safari, Edge)
-- **Speed/Stealth Modes**: Optimized for different scraping scenarios
-- **Thread-safe & Async-safe**: Protected rate limiters, proxy pools, cookies
-- **Rate Limiting**: Per-domain token bucket algorithm
-- **Proxy Pool**: Rotation strategies with health tracking
-- **Batch Operations**: `gather_sync()` and `gather_async()`
+- **Unified API**: Single `HTTPClient` class for all HTTP operations
+- **Per-Request Backend Switching**: Use `httpx` (default) or `curl` per request
+- **Shared Session State**: Cookies persist across both backends
+- **Browser Fingerprinting**: Optional stealth mode with TLS fingerprinting (curl backend)
+- **Sync & Async**: Both synchronous and asynchronous methods
+- **Helper Methods**: `get_status_code()`, `get_headers()`, `get_cookies()`, `get_current_proxy()`
 
 ## Installation
 
@@ -27,391 +17,258 @@ A Python HTTP client package for web scraping and API interactions, featuring tw
 # Install latest version
 pip install git+https://github.com/iampramodphuyal/httphandler.git
 
-# Install specific version
-pip install git+https://github.com/iampramodphuyal/httphandler.git@v0.3.0
-
-# For development
-git clone https://github.com/iampramodphuyal/httphandler.git
-cd httphandler
-pip install -e ".[dev]"
+# For curl backend (optional, for stealth mode)
+pip install curl_cffi
 ```
 
 ## Quick Start
 
-### HTTPHandler (Simple - Recommended for Beginners)
+### Basic Usage
 
 ```python
-from http_client import HTTPHandler
+from http_client import HTTPClient
 
-# Create handler with default headers
-handler = HTTPHandler(headers={"User-Agent": "MyApp/1.0"})
+# Create client (httpx backend by default)
+client = HTTPClient()
 
 # Make requests
-response = handler.get("https://httpbin.org/get")
-print(handler.get_status_code())  # 200
-print(handler.get_cookies())      # {"session": "..."}
-print(handler.get_headers())      # {"Content-Type": "..."}
-print(handler.get_bandwidth())    # 1234.5 bytes/sec
+response = client.get("https://httpbin.org/get")
+print(response.status_code)  # 200
+print(response.text)
 
-# Session management
-handler.persist_session = True
-handler.post("https://example.com/login", data={"user": "john"})
-handler.get("https://example.com/dashboard")  # Cookies included
-handler.reset_session()  # Clear for fresh start
+# Use helper methods
+print(client.get_status_code())   # 200
+print(client.get_headers())       # {"Content-Type": "application/json", ...}
+print(client.get_cookies())       # {"session": "..."}
 
-# Context manager
-with HTTPHandler(headers={"User-Agent": "MyApp/1.0"}) as h:
-    h.get("https://example.com")
-# Auto-cleanup
+client.close()
 ```
 
-### ScraperClient (Advanced)
+### Cookie Persistence
 
 ```python
-from http_client import ScraperClient
+from http_client import HTTPClient
 
-# Simple request
-client = ScraperClient()
-response = client.get("https://example.com")
-print(response.text)
+# Enable cookie persistence
+client = HTTPClient(persist_cookies=True)
+
+# Login (cookies stored automatically)
+client.post("https://example.com/login", json={"user": "john", "pass": "secret"})
+
+# Subsequent requests include cookies
+client.get("https://example.com/dashboard")  # Cookies sent automatically
+
 client.close()
+```
 
-# Async request
+### Per-Request Backend Switching
+
+```python
+from http_client import HTTPClient
+
+client = HTTPClient(persist_cookies=True)
+
+# Request 1: Use httpx (default, fast)
+resp1 = client.get("https://api.example.com/data")
+
+# Request 2: Use curl with stealth mode (for protected sites)
+resp2 = client.get(
+    "https://protected-site.com",
+    backend="curl",
+    stealth=True,
+)
+
+# Request 3: Back to httpx (cookies from resp2 available!)
+resp3 = client.get("https://api.example.com/data")
+
+client.close()
+```
+
+### Async Support
+
+```python
 import asyncio
+from http_client import HTTPClient
 
 async def main():
-    async with ScraperClient() as client:
-        response = await client.get_async("https://example.com")
-        print(response.text)
+    async with HTTPClient() as client:
+        response = await client.get_async("https://httpbin.org/get")
+        print(response.json())
 
 asyncio.run(main())
+```
 
-# Stealth mode with all features
-client = ScraperClient(
-    mode="stealth",
-    persist_cookies=True,
-    profile="chrome_120",
-    proxies=["socks5://proxy1:1080", "http://proxy2:8080"],
-    proxy_strategy="round_robin",
-    rate_limit=2.0,
-    min_delay=1.0,
-    max_delay=3.0,
+## API Reference
+
+### HTTPClient Initialization
+
+```python
+HTTPClient(
+    default_backend="httpx",     # "httpx" or "curl"
+    persist_cookies=False,       # Enable cookie persistence
+    timeout=30.0,                # Request timeout (seconds)
+    headers=None,                # Default headers for all requests
+    verify_ssl=True,             # SSL certificate verification
+    proxy=None,                  # Default proxy URL
+    follow_redirects=True,       # Follow HTTP redirects
+    profile="chrome_120",        # Browser profile (curl stealth mode)
 )
 ```
 
-## HTTPHandler Features
+### Request Methods
 
-### Response Helpers
+All methods support these parameters:
+- `headers`: Per-request headers (merged with defaults)
+- `params`: URL query parameters
+- `cookies`: Per-request cookies (merged with stored cookies)
+- `timeout`: Request-specific timeout
+- `proxy`: Request-specific proxy
+- `backend`: `"httpx"` or `"curl"` (overrides default)
+- `stealth`: Apply browser fingerprinting (curl backend only)
 
 ```python
-handler = HTTPHandler(headers={"User-Agent": "MyApp/1.0"})
-handler.get("https://httpbin.org/get")
+# Sync methods
+client.get(url, **kwargs)
+client.post(url, data=None, json=None, **kwargs)
+client.put(url, data=None, json=None, **kwargs)
+client.delete(url, **kwargs)
+client.patch(url, data=None, json=None, **kwargs)
+client.head(url, **kwargs)
+client.options(url, **kwargs)
 
-# Access last response data
-handler.get_status_code()     # HTTP status code
-handler.get_cookies()         # Response cookies
-handler.get_headers()         # Response headers
-handler.get_bandwidth()       # bytes/second
-handler.get_elapsed()         # Request duration
-handler.get_content_length()  # Response size
-handler.get_response()        # Full Response object
+# Async methods (add _async suffix)
+await client.get_async(url, **kwargs)
+await client.post_async(url, **kwargs)
+# ... etc
 ```
 
-### Session Control
+### Helper Methods
 
 ```python
-handler = HTTPHandler(persist_session=True, headers={"User-Agent": "MyApp/1.0"})
-
-# Requests 1-3: Same session (cookies maintained)
-handler.get("https://example.com/step1")
-handler.get("https://example.com/step2")
-handler.get("https://example.com/step3")
-
-# Reset for independent requests
-handler.reset_session()
-
-# Requests 4-5: Fresh session
-handler.get("https://example.com/other1")
-handler.get("https://example.com/other2")
+client.get_status_code()      # Last response status code
+client.get_headers()          # Last response headers
+client.get_cookies()          # Last response cookies
+client.get_current_proxy()    # Currently configured proxy
+client.get_elapsed()          # Last request duration (seconds)
+client.last_response          # Full Response object
 ```
 
-### Header Management
+### Cookie Management
 
 ```python
-handler = HTTPHandler()
-
-handler.set_headers({"User-Agent": "MyApp/1.0", "Accept": "application/json"})
-handler.add_header("Authorization", "Bearer token123")
-handler.remove_header("Accept")
-handler.clear_headers()
+client.cookies                # All stored cookies by domain
+client.clear_cookies()        # Clear all cookies
+client.clear_cookies("domain.com")  # Clear domain-specific
 ```
 
-### Proxy Control
+### Header & Proxy Management
 
 ```python
-handler = HTTPHandler(proxy="socks5://localhost:1080")
-
-handler.disable_proxy()  # Temporarily disable
-handler.enable_proxy()   # Re-enable
-handler.set_proxy("http://newproxy:8080")  # Change proxy
+client.set_default_header("X-Custom", "value")
+client.remove_default_header("X-Custom")
+client.set_proxy("http://proxy:8080")
 ```
 
-### Streaming Downloads
+## Backends
+
+### httpx (Default)
+
+- Fast and reliable
+- HTTP/2 support
+- Best for APIs and general use
+
+### curl (Stealth Mode)
+
+- TLS fingerprinting via curl_cffi
+- Browser-like headers and behavior
+- Best for protected sites with anti-bot measures
 
 ```python
-handler = HTTPHandler(headers={"User-Agent": "Downloader/1.0"})
-
-# With progress callback
-def progress(chunk, downloaded, total):
-    print(f"Downloaded: {downloaded}/{total}")
-
-with open("file.zip", "wb") as f:
-    for chunk in handler.stream("https://example.com/file.zip", callback=progress):
-        f.write(chunk)
-```
-
-### Context Managers
-
-```python
-# Auto-cleanup on exit
-with HTTPHandler(headers={"User-Agent": "MyApp/1.0"}) as handler:
-    handler.get("https://example.com")
-
-# Scoped session with auto-reset
-handler = HTTPHandler(headers={"User-Agent": "MyApp/1.0"})
-with handler.session() as session:
-    session.get("https://example.com/step1")
-    session.get("https://example.com/step2")
-# Session automatically reset here
-```
-
-## ScraperClient Features
-
-### Batch Operations
-
-```python
-# Thread pool (sync)
-with ScraperClient(max_workers=20) as client:
-    urls = [f"https://example.com/{i}" for i in range(100)]
-    results = client.gather_sync(urls)
-
-    print(f"Success: {results.success_count}")
-    print(f"Failed: {results.failure_count}")
-
-# Async with concurrency control
-async with ScraperClient() as client:
-    results = await client.gather_async(urls, concurrency=50)
-```
-
-### Speed vs Stealth Modes
-
-```python
-# Speed mode: Maximum throughput
-client = ScraperClient(
-    mode="speed",
-    rate_limit=0,
-    max_workers=50,
-)
-
-# Stealth mode: Browser-like behavior
-client = ScraperClient(
-    mode="stealth",
-    profile="chrome_120",
-    persist_cookies=True,
-    rate_limit=2.0,
-    min_delay=1.0,
-    max_delay=3.0,
+# Use curl backend with stealth
+response = client.get(
+    "https://protected-site.com",
+    backend="curl",
+    stealth=True,
 )
 ```
 
-### Browser Profiles
-
-Available profiles for TLS fingerprinting:
+Available browser profiles for stealth mode:
 - Chrome: `chrome_120`, `chrome_119`, `chrome_118`
 - Firefox: `firefox_121`, `firefox_120`, `firefox_117`
 - Safari: `safari_17`, `safari_16`, `safari_15`
 - Edge: `edge_120`, `edge_119`
 
-```python
-from http_client import get_profile, PROFILES
-
-profile = get_profile("chrome_120")
-print(profile.user_agent)
-print(list(PROFILES.keys()))
-```
-
-### Proxy Pool
-
-```python
-client = ScraperClient(
-    proxies=[
-        "http://proxy1:8080",
-        "socks5://proxy2:1080",
-        "http://user:pass@proxy3:8080",
-    ],
-    proxy_strategy="round_robin",  # or "random", "least_used"
-    proxy_max_failures=3,
-    proxy_cooldown=300.0,
-)
-
-# Check pool status
-if client.proxy_pool:
-    stats = client.proxy_pool.get_stats()
-    print(f"Available: {stats['available']}/{stats['total']}")
-```
-
-### Rate Limiting
-
-```python
-client = ScraperClient(rate_limit=2.0)  # 2 req/sec per domain
-
-if client.rate_limiter:
-    client.rate_limiter.set_domain_rate("api.example.com", 10.0)
-```
-
 ## Error Handling
 
 ```python
-from http_client import (
-    HTTPHandler,
-    ScraperClient,
-    TransportError,
-    HTTPError,
-    MaxRetriesExceeded,
-    NoResponseError,
-)
+from http_client import HTTPClient, TransportError, HTTPError
 
-# HTTPHandler
-handler = HTTPHandler(headers={"User-Agent": "MyApp/1.0"})
-try:
-    handler.get("https://example.com")
-except TransportError as e:
-    print(f"Connection error: {e}")
+client = HTTPClient()
 
-# Check for response before using helpers
-try:
-    print(handler.get_status_code())
-except NoResponseError:
-    print("No request made yet")
-
-# ScraperClient
 try:
     response = client.get("https://example.com")
-    response.raise_for_status()
+    response.raise_for_status()  # Raises HTTPError for 4xx/5xx
+except TransportError as e:
+    print(f"Connection failed: {e}")
 except HTTPError as e:
     print(f"HTTP error: {e.response.status_code}")
-except MaxRetriesExceeded as e:
-    print(f"Retries exhausted for {e.url}")
+finally:
+    client.close()
 ```
 
-## Configuration Reference
-
-### HTTPHandler Options
+## Context Managers
 
 ```python
-HTTPHandler(
-    persist_session=False,     # Cookie persistence
-    timeout=30.0,              # Request timeout
-    connect_timeout=10.0,      # Connection timeout
-    verify_ssl=True,           # SSL verification
-    http_version="auto",       # "1.1", "2", or "auto"
-    proxy=None,                # Proxy URL
-    max_retries=3,             # Retry attempts
-    headers=None,              # Default headers
-)
-```
+# Sync
+with HTTPClient() as client:
+    response = client.get("https://example.com")
+# Auto-cleanup
 
-### ScraperClient Options
-
-```python
-ScraperClient(
-    mode="speed",              # "speed" or "stealth"
-    persist_cookies=False,     # Cookie persistence
-    profile="chrome_120",      # Browser profile
-    rate_limit=2.0,            # Requests/sec per domain
-    timeout=30.0,              # Request timeout
-    connect_timeout=10.0,      # Connection timeout
-    retries=3,                 # Retry attempts
-    proxies=None,              # List of proxy URLs
-    proxy_strategy="round_robin",
-    proxy_max_failures=3,
-    proxy_cooldown=300.0,
-    max_workers=10,            # Thread pool size
-    default_concurrency=10,    # Async semaphore limit
-    min_delay=1.0,             # Stealth mode delays
-    max_delay=3.0,
-    verify_ssl=True,
-    follow_redirects=True,
-    max_redirects=10,
-    http_version="auto",
-)
+# Async
+async with HTTPClient() as client:
+    response = await client.get_async("https://example.com")
+# Auto-cleanup
 ```
 
 ## Package Structure
 
 ```
 http_client/
-├── __init__.py              # Public API exports
-├── client.py                # ScraperClient
-├── handler.py               # HTTPHandler (simple interface)
-├── config.py                # ClientConfig dataclass
-├── models.py                # Request, Response, exceptions
-├── backends/                # Async and thread backends
-├── transport/               # curl_cffi transport with httpx fallback
-├── safety/                  # Rate limiter, proxy pool, cookie store
-└── fingerprint/             # Browser profiles and headers
-```
-
-## Thread Safety
-
-All shared components are thread-safe and async-safe:
-- Rate limiter uses dual-lock pattern
-- Proxy pool protected by threading locks
-- Cookie store safe for concurrent access
-
-```python
-from concurrent.futures import ThreadPoolExecutor
-
-client = ScraperClient(rate_limit=2.0)
-
-def fetch(url):
-    return client.get(url).status_code
-
-with client:
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        results = list(executor.map(fetch, urls))
+├── __init__.py          # Public API: HTTPClient, Response, exceptions
+├── client.py            # Unified HTTPClient class
+├── models.py            # Request, Response, exceptions
+├── _backends/           # Internal backend implementations
+│   ├── httpx_backend.py # httpx wrapper
+│   └── curl_backend.py  # curl_cffi wrapper with stealth
+├── _cookies.py          # Thread-safe cookie storage
+└── _fingerprint/        # Browser profiles for stealth mode
 ```
 
 ## Development
 
 ```bash
-# Setup
+# Clone repository
 git clone https://github.com/iampramodphuyal/httphandler.git
 cd httphandler
+
+# Install with dev dependencies
 pip install -e ".[dev]"
 
 # Run tests
 pytest
 
-# Run with coverage
-pytest --cov=http_client
-
 # Type checking
 mypy http_client
-
-# Linting
-ruff check http_client
 ```
 
 ## Documentation
 
 See [USAGE.md](USAGE.md) for comprehensive documentation including:
-- Complete HTTPHandler guide
-- Advanced ScraperClient features
-- Async and thread pool operations
-- Thread safety patterns
-- Real-world examples
-- Troubleshooting
+- Complete API reference
+- Per-request backend switching examples
+- Cookie persistence patterns
+- Stealth mode configuration
+- Error handling best practices
 
 ## License
 

@@ -1,112 +1,51 @@
-"""HTTP client package for web scraping with dual execution model support.
+"""HTTP client package with unified interface.
 
-This package provides two interfaces:
+Simple usage:
+    from http_client import HTTPClient
 
-1. **HTTPHandler** (Simple) - For straightforward HTTP requests:
-   - Session persistence control
-   - Response helper methods
-   - Header and proxy management
-   - Streaming support
-
-2. **ScraperClient** (Advanced) - For complex scraping needs:
-   - TLS fingerprint impersonation via curl_cffi
-   - Thread-safe and async-safe rate limiting
-   - Proxy pool with rotation strategies
-   - Browser profile emulation
-
-Simple usage (HTTPHandler):
-
-    from http_client import HTTPHandler
-
-    handler = HTTPHandler()
-    resp = handler.get("https://example.com", headers={"User-Agent": "MyApp/1.0"})
-    print(handler.get_status_code())
-    print(handler.get_cookies())
-
-    # Session management
-    handler.persist_session = True
-    handler.get("https://example.com/login")
-    handler.get("https://example.com/dashboard")  # Cookies maintained
-    handler.reset_session()  # Clear for new session
-
-Advanced usage (ScraperClient):
-
-    from http_client import ScraperClient
-
-    # Stealth mode with cookies and proxies
-    client = ScraperClient(
-        mode="stealth",
-        persist_cookies=True,
-        profile="chrome_120",
-        proxies=["socks5://proxy1:1080"],
-    )
+    client = HTTPClient()
     response = client.get("https://example.com")
+    print(response.text)
 
-    # Batch operations
-    async with ScraperClient() as client:
-        results = await client.gather_async(urls, concurrency=50)
+With cookie persistence:
+    client = HTTPClient(persist_cookies=True)
+    client.post("https://example.com/login", json={"user": "..."})
+    client.get("https://example.com/dashboard")  # Cookies included
+
+Per-request backend switching:
+    # Use httpx (default) for most requests
+    response = client.get("https://api.example.com")
+
+    # Switch to curl for stealth mode
+    response = client.get(
+        "https://protected-site.com",
+        backend="curl",
+        stealth=True,
+    )
+
+Async usage:
+    async with HTTPClient() as client:
+        response = await client.get_async("https://example.com")
 """
 
-from .client import ScraperClient
-from .config import ClientConfig
-from .handler import HTTPHandler, NoResponseError
+from .client import HTTPClient
 from .models import (
     Request,
     Response,
-    BatchResult,
     HTTPClientError,
     TransportError,
     HTTPError,
-    RateLimitExceeded,
-    AllProxiesFailed,
     MaxRetriesExceeded,
 )
-from .fingerprint import (
-    BrowserProfile,
-    PROFILES,
-    get_profile,
-    HeaderGenerator,
-)
-from .safety import (
-    TokenBucket,
-    DomainRateLimiter,
-    Proxy,
-    ProxyPool,
-    CookieStore,
-)
 
-__version__ = "0.1.0"
+__version__ = "0.4.0"
 
 __all__ = [
-    # Simple interface
-    "HTTPHandler",
-    # Advanced interface
-    "ScraperClient",
-    # Configuration
-    "ClientConfig",
-    # Models
+    "HTTPClient",
     "Request",
     "Response",
-    "BatchResult",
-    # Exceptions
     "HTTPClientError",
     "TransportError",
     "HTTPError",
-    "RateLimitExceeded",
-    "AllProxiesFailed",
     "MaxRetriesExceeded",
-    "NoResponseError",
-    # Fingerprinting
-    "BrowserProfile",
-    "PROFILES",
-    "get_profile",
-    "HeaderGenerator",
-    # Safety primitives
-    "TokenBucket",
-    "DomainRateLimiter",
-    "Proxy",
-    "ProxyPool",
-    "CookieStore",
-    # Version
-    "__version__",
 ]

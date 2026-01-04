@@ -1,240 +1,159 @@
-"""Main ScraperClient class providing unified HTTP client interface."""
+"""Unified HTTP client with per-request backend switching."""
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from typing import Any, Literal
 
-from .backends import AsyncBackend, ThreadBackend
-from .config import ClientConfig
-from .fingerprint import get_profile
-from .models import BatchResult, Request, Response
-from .safety import CookieStore, DomainRateLimiter, ProxyPool
-from .transport import CurlTransport
+from .models import Response
+from ._cookies import CookieStore
+from ._backends import HttpxBackend, CurlBackend, CURL_AVAILABLE
 
 
-class ScraperClient:
-    """Unified HTTP client for web scraping with dual execution model support.
+class HTTPClient:
+    """Unified HTTP client supporting httpx and curl_cffi backends.
 
-    Supports both synchronous (thread pool) and asynchronous (asyncio) execution
-    models with shared safety primitives (rate limiting, proxy pool, cookie store).
+    Features:
+    - httpx as default backend (reliable, well-maintained)
+    - Per-request backend switching for stealth needs
+    - Shared cookie persistence across backends
+    - Optional browser fingerprinting with curl_cffi
 
     Examples:
-        # Simple sync usage
-        client = ScraperClient()
-        response = client.get("https://example.com")
-        print(response.text)
+        # Simple usage (httpx backend)
+        client = HTTPClient()
+        response = client.get("https://api.example.com/data")
 
-        # Simple async usage
-        async with ScraperClient() as client:
-            response = await client.get_async("https://example.com")
-            print(response.text)
+        # With cookie persistence
+        client = HTTPClient(persist_cookies=True)
+        client.post("https://example.com/login", json={"user": "..."})
+        client.get("https://example.com/dashboard")  # Cookies sent
 
-        # Thread pool batch
-        with ScraperClient(max_workers=20) as client:
-            results = client.gather_sync(urls)
-
-        # Async batch with concurrency
-        async with ScraperClient() as client:
-            results = await client.gather_async(urls, concurrency=50)
-
-        # Stealth mode with cookies and proxies
-        client = ScraperClient(
-            mode="stealth",
-            persist_cookies=True,
-            profile="chrome_120",
-            proxies=["socks5://proxy1:1080", "http://proxy2:8080"],
+        # Per-request stealth mode
+        response = client.get(
+            "https://protected-site.com",
+            backend="curl",
+            stealth=True,
         )
 
-        # Speed mode, no rate limiting
-        client = ScraperClient(mode="speed", rate_limit=0)
+        # Async usage
+        async with HTTPClient() as client:
+            response = await client.get_async("https://example.com")
     """
 
     def __init__(
         self,
-        # Can pass a config object or individual kwargs
-        config: ClientConfig | None = None,
-        # Individual config options (override config if both provided)
-        mode: str | None = None,
-        persist_cookies: bool | None = None,
-        profile: str | None = None,
-        rate_limit: float | None = None,
-        timeout: float | None = None,
-        connect_timeout: float | None = None,
-        retries: int | None = None,
-        retry_codes: tuple[int, ...] | None = None,
-        retry_backoff_base: float | None = None,
-        proxies: list[str] | None = None,
-        proxy_strategy: str | None = None,
-        proxy_max_failures: int | None = None,
-        proxy_cooldown: float | None = None,
-        max_workers: int | None = None,
-        default_concurrency: int | None = None,
-        min_delay: float | None = None,
-        max_delay: float | None = None,
-        verify_ssl: bool | None = None,
-        follow_redirects: bool | None = None,
-        max_redirects: int | None = None,
-        http_version: str | None = None,
-        default_headers: dict[str, str] | None = None,
+        default_backend: Literal["httpx", "curl"] = "httpx",
+        persist_cookies: bool = False,
+        timeout: float = 30.0,
+        headers: dict[str, str] | None = None,
+        verify_ssl: bool = True,
+        proxy: str | None = None,
+        follow_redirects: bool = True,
+        profile: str = "chrome_120",
     ):
-        """Initialize ScraperClient.
+        """Initialize HTTPClient.
 
         Args:
-            config: ClientConfig object (optional, can use kwargs instead).
-            mode: Operating mode - "speed" or "stealth".
-            persist_cookies: Whether to persist cookies between requests.
-            profile: Browser profile for fingerprinting.
-            rate_limit: Requests per second per domain (0 to disable).
-            timeout: Total request timeout in seconds.
-            connect_timeout: Connection timeout in seconds.
-            retries: Number of retry attempts.
-            retry_codes: HTTP status codes that trigger retry.
-            retry_backoff_base: Base for exponential backoff.
-            proxies: List of proxy URLs.
-            proxy_strategy: Proxy rotation strategy.
-            proxy_max_failures: Failures before disabling proxy.
-            proxy_cooldown: Seconds before re-enabling failed proxy.
-            max_workers: Thread pool size for gather_sync.
-            default_concurrency: Semaphore limit for gather_async.
-            min_delay: Minimum stealth mode delay.
-            max_delay: Maximum stealth mode delay.
+            default_backend: Default backend for requests ("httpx" or "curl").
+            persist_cookies: Whether to persist cookies across requests.
+            timeout: Default request timeout in seconds.
+            headers: Default headers for all requests.
             verify_ssl: Whether to verify SSL certificates.
+            proxy: Default proxy URL.
             follow_redirects: Whether to follow redirects.
-            max_redirects: Maximum redirects to follow.
-            http_version: HTTP version - "1.1", "2", or "auto".
-            default_headers: Default headers for all requests.
+            profile: Browser profile for curl stealth mode.
         """
-        # Validate profile name early (fail fast on invalid profile)
-        profile_to_validate = profile if profile is not None else (
-            config.profile if config is not None else "chrome_120"
-        )
-        try:
-            get_profile(profile_to_validate)
-        except ValueError as e:
-            raise ValueError(f"Invalid profile configuration: {e}") from e
+        self._default_backend = default_backend
+        self._timeout = timeout
+        self._default_headers = dict(headers) if headers else {}
+        self._verify_ssl = verify_ssl
+        self._proxy = proxy
+        self._follow_redirects = follow_redirects
+        self._profile = profile
 
-        # Build config from kwargs or use provided config
-        if config is None:
-            config_kwargs = {}
-            if mode is not None:
-                config_kwargs["mode"] = mode
-            if persist_cookies is not None:
-                config_kwargs["persist_cookies"] = persist_cookies
-            if profile is not None:
-                config_kwargs["profile"] = profile
-            if rate_limit is not None:
-                config_kwargs["rate_limit"] = rate_limit
-            if timeout is not None:
-                config_kwargs["timeout"] = timeout
-            if connect_timeout is not None:
-                config_kwargs["connect_timeout"] = connect_timeout
-            if retries is not None:
-                config_kwargs["retries"] = retries
-            if retry_codes is not None:
-                config_kwargs["retry_codes"] = retry_codes
-            if retry_backoff_base is not None:
-                config_kwargs["retry_backoff_base"] = retry_backoff_base
-            if proxies is not None:
-                config_kwargs["proxies"] = proxies
-            if proxy_strategy is not None:
-                config_kwargs["proxy_strategy"] = proxy_strategy
-            if proxy_max_failures is not None:
-                config_kwargs["proxy_max_failures"] = proxy_max_failures
-            if proxy_cooldown is not None:
-                config_kwargs["proxy_cooldown"] = proxy_cooldown
-            if max_workers is not None:
-                config_kwargs["max_workers"] = max_workers
-            if default_concurrency is not None:
-                config_kwargs["default_concurrency"] = default_concurrency
-            if min_delay is not None:
-                config_kwargs["min_delay"] = min_delay
-            if max_delay is not None:
-                config_kwargs["max_delay"] = max_delay
-            if verify_ssl is not None:
-                config_kwargs["verify_ssl"] = verify_ssl
-            if follow_redirects is not None:
-                config_kwargs["follow_redirects"] = follow_redirects
-            if max_redirects is not None:
-                config_kwargs["max_redirects"] = max_redirects
-            if http_version is not None:
-                config_kwargs["http_version"] = http_version
-            if default_headers is not None:
-                config_kwargs["default_headers"] = default_headers
-
-            self._config = ClientConfig(**config_kwargs)
-        else:
-            self._config = config
-
-        # Shared safety primitives
-        self._rate_limiter: DomainRateLimiter | None = None
-        if self._config.rate_limit > 0:
-            self._rate_limiter = DomainRateLimiter(
-                default_rate=self._config.rate_limit
-            )
-
-        self._proxy_pool: ProxyPool | None = None
-        if self._config.proxies:
-            self._proxy_pool = ProxyPool(
-                proxies=self._config.proxies,
-                strategy=self._config.proxy_strategy,
-                max_failures=self._config.proxy_max_failures,
-                cooldown=self._config.proxy_cooldown,
-            )
-
+        # Cookie store (shared across backends)
         self._cookie_store: CookieStore | None = None
-        if self._config.persist_cookies:
+        if persist_cookies:
             self._cookie_store = CookieStore()
 
-        # Create shared transport
-        profile = get_profile(self._config.profile)
-        impersonate = profile.impersonate if self._config.mode == "stealth" else None
-        self._transport = CurlTransport(
-            impersonate=impersonate,
-            default_timeout=self._config.timeout,
-            connect_timeout=self._config.connect_timeout,
-            http_version=self._config.http_version,
-        )
+        # Lazy-initialized backends
+        self._httpx_backend: HttpxBackend | None = None
+        self._curl_backend: CurlBackend | None = None
 
-        # Create backends sharing the same primitives
-        self._async_backend = AsyncBackend(
-            config=self._config,
-            transport=self._transport,
-            rate_limiter=self._rate_limiter,
-            proxy_pool=self._proxy_pool,
-            cookie_store=self._cookie_store,
-        )
-
-        self._thread_backend = ThreadBackend(
-            config=self._config,
-            transport=self._transport,
-            rate_limiter=self._rate_limiter,
-            proxy_pool=self._proxy_pool,
-            cookie_store=self._cookie_store,
-        )
-
+        # State tracking
+        self._last_response: Response | None = None
         self._closed = False
 
-    @property
-    def config(self) -> ClientConfig:
-        """Get client configuration."""
-        return self._config
+    def _get_httpx_backend(self) -> HttpxBackend:
+        """Get or create httpx backend."""
+        if self._httpx_backend is None:
+            self._httpx_backend = HttpxBackend(
+                timeout=self._timeout,
+                verify_ssl=self._verify_ssl,
+                follow_redirects=self._follow_redirects,
+            )
+        return self._httpx_backend
 
-    @property
-    def cookie_store(self) -> CookieStore | None:
-        """Get cookie store (None if persist_cookies=False)."""
-        return self._cookie_store
+    def _get_curl_backend(self) -> CurlBackend:
+        """Get or create curl backend."""
+        if self._curl_backend is None:
+            if not CURL_AVAILABLE:
+                raise ImportError(
+                    "curl_cffi is required for curl backend. "
+                    "Install with: pip install curl_cffi"
+                )
+            self._curl_backend = CurlBackend(
+                profile=self._profile,
+                timeout=self._timeout,
+                verify_ssl=self._verify_ssl,
+                follow_redirects=self._follow_redirects,
+            )
+        return self._curl_backend
 
-    @property
-    def proxy_pool(self) -> ProxyPool | None:
-        """Get proxy pool (None if no proxies configured)."""
-        return self._proxy_pool
+    def _resolve_backend(self, backend: str | None) -> str:
+        """Resolve which backend to use."""
+        return backend or self._default_backend
 
-    @property
-    def rate_limiter(self) -> DomainRateLimiter | None:
-        """Get rate limiter (None if rate_limit=0)."""
-        return self._rate_limiter
+    def _prepare_cookies(self, url: str, cookies: dict | None) -> dict[str, str]:
+        """Merge request cookies with stored cookies."""
+        result = {}
+        if self._cookie_store:
+            result.update(self._cookie_store.get_for_url(url))
+        if cookies:
+            result.update(cookies)
+        return result
 
-    # ========== Sync Methods ==========
+    async def _prepare_cookies_async(
+        self, url: str, cookies: dict | None
+    ) -> dict[str, str]:
+        """Merge request cookies with stored cookies (async)."""
+        result = {}
+        if self._cookie_store:
+            result.update(await self._cookie_store.get_for_url_async(url))
+        if cookies:
+            result.update(cookies)
+        return result
+
+    def _store_cookies(self, url: str, response_cookies: dict[str, str]) -> None:
+        """Store cookies from response."""
+        if self._cookie_store and response_cookies:
+            self._cookie_store.update_from_response(url, response_cookies)
+
+    async def _store_cookies_async(
+        self, url: str, response_cookies: dict[str, str]
+    ) -> None:
+        """Store cookies from response (async)."""
+        if self._cookie_store and response_cookies:
+            await self._cookie_store.update_from_response_async(url, response_cookies)
+
+    def _merge_headers(self, headers: dict | None) -> dict[str, str]:
+        """Merge request headers with defaults."""
+        result = dict(self._default_headers)
+        if headers:
+            result.update(headers)
+        return result
+
+    # ========== Sync HTTP Methods ==========
 
     def request(
         self,
@@ -243,40 +162,72 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous HTTP request.
+        """Make an HTTP request.
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE, etc.).
             url: Request URL.
-            headers: Request headers.
+            headers: Request headers (merged with defaults).
             params: URL query parameters.
             data: Form data for POST requests.
             json: JSON body for POST requests.
-            cookies: Cookies to send.
+            cookies: Request cookies (merged with stored cookies).
             timeout: Request-specific timeout.
             proxy: Request-specific proxy.
+            backend: Backend to use ("httpx" or "curl").
+            stealth: Apply browser fingerprinting (curl backend only).
 
         Returns:
             Response object.
         """
-        request = Request(
-            method=method,
-            url=url,
-            headers=headers or {},
-            params=params,
-            data=data,
-            json=json,
-            cookies=cookies,
-            timeout=timeout,
-            proxy=proxy,
-        )
-        return self._thread_backend.execute_sync(request)
+        if self._closed:
+            raise RuntimeError("Client is closed")
+
+        backend_name = self._resolve_backend(backend)
+        final_headers = self._merge_headers(headers)
+        final_cookies = self._prepare_cookies(url, cookies)
+        final_timeout = timeout or self._timeout
+        final_proxy = proxy or self._proxy
+
+        if backend_name == "curl":
+            backend_impl = self._get_curl_backend()
+            response = backend_impl.request_sync(
+                method=method,
+                url=url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=final_cookies or None,
+                timeout=final_timeout,
+                proxy=final_proxy,
+                stealth=stealth,
+            )
+        else:
+            backend_impl = self._get_httpx_backend()
+            response = backend_impl.request_sync(
+                method=method,
+                url=url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=final_cookies or None,
+                timeout=final_timeout,
+                proxy=final_proxy,
+            )
+
+        self._store_cookies(url, response.cookies)
+        self._last_response = response
+        return response
 
     def get(
         self,
@@ -287,20 +238,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous GET request.
-
-        Args:
-            url: Request URL.
-            headers: Request headers.
-            params: URL query parameters.
-            cookies: Cookies to send.
-            timeout: Request-specific timeout.
-            proxy: Request-specific proxy.
-
-        Returns:
-            Response object.
-        """
+        """Make a GET request."""
         return self.request(
             "GET",
             url,
@@ -309,6 +250,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     def post(
@@ -317,27 +260,15 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous POST request.
-
-        Args:
-            url: Request URL.
-            headers: Request headers.
-            params: URL query parameters.
-            data: Form data.
-            json: JSON body.
-            cookies: Cookies to send.
-            timeout: Request-specific timeout.
-            proxy: Request-specific proxy.
-
-        Returns:
-            Response object.
-        """
+        """Make a POST request."""
         return self.request(
             "POST",
             url,
@@ -348,6 +279,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     def put(
@@ -356,13 +289,15 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous PUT request."""
+        """Make a PUT request."""
         return self.request(
             "PUT",
             url,
@@ -373,6 +308,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     def delete(
@@ -384,8 +321,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous DELETE request."""
+        """Make a DELETE request."""
         return self.request(
             "DELETE",
             url,
@@ -394,6 +333,37 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
+        )
+
+    def patch(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        data: Any = None,
+        json: Any = None,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
+    ) -> Response:
+        """Make a PATCH request."""
+        return self.request(
+            "PATCH",
+            url,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            cookies=cookies,
+            timeout=timeout,
+            proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     def head(
@@ -405,8 +375,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make a synchronous HEAD request."""
+        """Make a HEAD request."""
         return self.request(
             "HEAD",
             url,
@@ -415,30 +387,36 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
-    def gather_sync(
+    def options(
         self,
-        urls_or_requests: Sequence[str | Request],
+        url: str,
         *,
-        stop_on_error: bool = False,
-    ) -> BatchResult:
-        """Execute multiple requests using thread pool.
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
+    ) -> Response:
+        """Make an OPTIONS request."""
+        return self.request(
+            "OPTIONS",
+            url,
+            headers=headers,
+            params=params,
+            cookies=cookies,
+            timeout=timeout,
+            proxy=proxy,
+            backend=backend,
+            stealth=stealth,
+        )
 
-        Args:
-            urls_or_requests: List of URLs (for GET) or Request objects.
-            stop_on_error: Whether to stop on first error.
-
-        Returns:
-            BatchResult with responses and errors.
-        """
-        requests = [
-            Request(method="GET", url=u) if isinstance(u, str) else u
-            for u in urls_or_requests
-        ]
-        return self._thread_backend.gather_sync(requests, stop_on_error=stop_on_error)
-
-    # ========== Async Methods ==========
+    # ========== Async HTTP Methods ==========
 
     async def request_async(
         self,
@@ -447,40 +425,72 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous HTTP request.
+        """Make an async HTTP request.
 
         Args:
             method: HTTP method (GET, POST, PUT, DELETE, etc.).
             url: Request URL.
-            headers: Request headers.
+            headers: Request headers (merged with defaults).
             params: URL query parameters.
             data: Form data for POST requests.
             json: JSON body for POST requests.
-            cookies: Cookies to send.
+            cookies: Request cookies (merged with stored cookies).
             timeout: Request-specific timeout.
             proxy: Request-specific proxy.
+            backend: Backend to use ("httpx" or "curl").
+            stealth: Apply browser fingerprinting (curl backend only).
 
         Returns:
             Response object.
         """
-        request = Request(
-            method=method,
-            url=url,
-            headers=headers or {},
-            params=params,
-            data=data,
-            json=json,
-            cookies=cookies,
-            timeout=timeout,
-            proxy=proxy,
-        )
-        return await self._async_backend.execute_async(request)
+        if self._closed:
+            raise RuntimeError("Client is closed")
+
+        backend_name = self._resolve_backend(backend)
+        final_headers = self._merge_headers(headers)
+        final_cookies = await self._prepare_cookies_async(url, cookies)
+        final_timeout = timeout or self._timeout
+        final_proxy = proxy or self._proxy
+
+        if backend_name == "curl":
+            backend_impl = self._get_curl_backend()
+            response = await backend_impl.request_async(
+                method=method,
+                url=url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=final_cookies or None,
+                timeout=final_timeout,
+                proxy=final_proxy,
+                stealth=stealth,
+            )
+        else:
+            backend_impl = self._get_httpx_backend()
+            response = await backend_impl.request_async(
+                method=method,
+                url=url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=final_cookies or None,
+                timeout=final_timeout,
+                proxy=final_proxy,
+            )
+
+        await self._store_cookies_async(url, response.cookies)
+        self._last_response = response
+        return response
 
     async def get_async(
         self,
@@ -491,20 +501,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous GET request.
-
-        Args:
-            url: Request URL.
-            headers: Request headers.
-            params: URL query parameters.
-            cookies: Cookies to send.
-            timeout: Request-specific timeout.
-            proxy: Request-specific proxy.
-
-        Returns:
-            Response object.
-        """
+        """Make an async GET request."""
         return await self.request_async(
             "GET",
             url,
@@ -513,6 +513,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     async def post_async(
@@ -521,27 +523,15 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous POST request.
-
-        Args:
-            url: Request URL.
-            headers: Request headers.
-            params: URL query parameters.
-            data: Form data.
-            json: JSON body.
-            cookies: Cookies to send.
-            timeout: Request-specific timeout.
-            proxy: Request-specific proxy.
-
-        Returns:
-            Response object.
-        """
+        """Make an async POST request."""
         return await self.request_async(
             "POST",
             url,
@@ -552,6 +542,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     async def put_async(
@@ -560,13 +552,15 @@ class ScraperClient:
         *,
         headers: dict[str, str] | None = None,
         params: dict[str, str] | None = None,
-        data: dict[str, Any] | str | bytes | None = None,
-        json: dict[str, Any] | list | None = None,
+        data: Any = None,
+        json: Any = None,
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous PUT request."""
+        """Make an async PUT request."""
         return await self.request_async(
             "PUT",
             url,
@@ -577,6 +571,8 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     async def delete_async(
@@ -588,8 +584,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous DELETE request."""
+        """Make an async DELETE request."""
         return await self.request_async(
             "DELETE",
             url,
@@ -598,6 +596,37 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
+        )
+
+    async def patch_async(
+        self,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        data: Any = None,
+        json: Any = None,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
+    ) -> Response:
+        """Make an async PATCH request."""
+        return await self.request_async(
+            "PATCH",
+            url,
+            headers=headers,
+            params=params,
+            data=data,
+            json=json,
+            cookies=cookies,
+            timeout=timeout,
+            proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
     async def head_async(
@@ -609,8 +638,10 @@ class ScraperClient:
         cookies: dict[str, str] | None = None,
         timeout: float | None = None,
         proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
     ) -> Response:
-        """Make an asynchronous HEAD request."""
+        """Make an async HEAD request."""
         return await self.request_async(
             "HEAD",
             url,
@@ -619,67 +650,121 @@ class ScraperClient:
             cookies=cookies,
             timeout=timeout,
             proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
-    async def gather_async(
+    async def options_async(
         self,
-        urls_or_requests: Sequence[str | Request],
+        url: str,
         *,
-        concurrency: int | None = None,
-        stop_on_error: bool = False,
-    ) -> BatchResult:
-        """Execute multiple requests using asyncio with semaphore.
-
-        Args:
-            urls_or_requests: List of URLs (for GET) or Request objects.
-            concurrency: Max concurrent requests (None for config default).
-            stop_on_error: Whether to stop on first error.
-
-        Returns:
-            BatchResult with responses and errors.
-        """
-        requests = [
-            Request(method="GET", url=u) if isinstance(u, str) else u
-            for u in urls_or_requests
-        ]
-        return await self._async_backend.gather_async(
-            requests,
-            concurrency=concurrency,
-            stop_on_error=stop_on_error,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        proxy: str | None = None,
+        backend: Literal["httpx", "curl"] | None = None,
+        stealth: bool = False,
+    ) -> Response:
+        """Make an async OPTIONS request."""
+        return await self.request_async(
+            "OPTIONS",
+            url,
+            headers=headers,
+            params=params,
+            cookies=cookies,
+            timeout=timeout,
+            proxy=proxy,
+            backend=backend,
+            stealth=stealth,
         )
 
-    # ========== Context Manager Support ==========
+    # ========== Helper Methods ==========
+
+    def get_status_code(self) -> int | None:
+        """Get status code from last response."""
+        return self._last_response.status_code if self._last_response else None
+
+    def get_headers(self) -> dict[str, str] | None:
+        """Get headers from last response."""
+        return dict(self._last_response.headers) if self._last_response else None
+
+    def get_cookies(self) -> dict[str, str] | None:
+        """Get cookies from last response."""
+        return dict(self._last_response.cookies) if self._last_response else None
+
+    def get_current_proxy(self) -> str | None:
+        """Get currently configured proxy."""
+        return self._proxy
+
+    def get_elapsed(self) -> float | None:
+        """Get elapsed time from last request."""
+        return self._last_response.elapsed if self._last_response else None
+
+    @property
+    def last_response(self) -> Response | None:
+        """Get the last response object."""
+        return self._last_response
+
+    # ========== Cookie Management ==========
+
+    @property
+    def cookies(self) -> dict[str, dict[str, str]]:
+        """Get all stored cookies organized by domain."""
+        if self._cookie_store:
+            return self._cookie_store.get_all()
+        return {}
+
+    def clear_cookies(self, domain: str | None = None) -> None:
+        """Clear cookies, optionally for specific domain."""
+        if self._cookie_store:
+            if domain:
+                self._cookie_store.clear_domain(domain)
+            else:
+                self._cookie_store.clear_all()
+
+    # ========== Header Management ==========
+
+    def set_default_header(self, name: str, value: str) -> None:
+        """Set a default header for all requests."""
+        self._default_headers[name] = value
+
+    def remove_default_header(self, name: str) -> None:
+        """Remove a default header."""
+        self._default_headers.pop(name, None)
+
+    def set_proxy(self, proxy: str | None) -> None:
+        """Set the default proxy."""
+        self._proxy = proxy
+
+    # ========== Context Managers ==========
 
     def close(self) -> None:
-        """Close client resources synchronously."""
+        """Close client and release resources."""
         if not self._closed:
-            self._thread_backend.close()
-            self._async_backend.close()
+            if self._httpx_backend:
+                self._httpx_backend.close_sync()
+            if self._curl_backend:
+                self._curl_backend.close_sync()
             self._closed = True
 
     async def close_async(self) -> None:
-        """Close client resources asynchronously."""
+        """Close client asynchronously."""
         if not self._closed:
-            await self._async_backend.close_async()
-            self._thread_backend.close()
+            if self._httpx_backend:
+                await self._httpx_backend.close_async()
+            if self._curl_backend:
+                await self._curl_backend.close_async()
             self._closed = True
 
-    def __enter__(self) -> "ScraperClient":
+    def __enter__(self) -> "HTTPClient":
         return self
 
-    def __exit__(self, *args: Any) -> None:
+    def __exit__(self, *args) -> None:
         self.close()
 
-    async def __aenter__(self) -> "ScraperClient":
+    async def __aenter__(self) -> "HTTPClient":
         return self
 
-    async def __aexit__(self, *args: Any) -> None:
+    async def __aexit__(self, *args) -> None:
         await self.close_async()
-
-    def __del__(self) -> None:
-        """Cleanup on garbage collection."""
-        if not self._closed:
-            try:
-                self.close()
-            except Exception:
-                pass  # Ignore errors during cleanup

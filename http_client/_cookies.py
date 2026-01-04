@@ -5,10 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from dataclasses import dataclass, field
-from http.cookiejar import CookieJar
-from http.cookies import SimpleCookie
-from typing import Iterator
+from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
@@ -46,15 +43,12 @@ class Cookie:
         domain = domain.lower()
         cookie_domain = self.domain.lower()
 
-        # Exact match
         if domain == cookie_domain:
             return True
 
-        # Domain attribute match (cookie domain starts with dot)
         if cookie_domain.startswith("."):
             return domain.endswith(cookie_domain) or domain == cookie_domain[1:]
 
-        # Subdomain match
         return domain.endswith("." + cookie_domain)
 
     def matches_path(self, path: str) -> bool:
@@ -74,31 +68,19 @@ class CookieStore:
 
     def __init__(self):
         """Initialize empty cookie store."""
-        # Domain -> {cookie_name: Cookie}
         self._cookies: dict[str, dict[str, Cookie]] = {}
         self._thread_lock = threading.Lock()
         self._async_lock: asyncio.Lock | None = None
 
     def _get_async_lock(self) -> asyncio.Lock:
-        """Lazily initialize async lock within event loop context.
-
-        Creates lock on first async access. Thread-safe via _thread_lock.
-
-        Returns:
-            asyncio.Lock for async coordination.
-
-        Raises:
-            RuntimeError: If called outside an async context (no event loop).
-        """
-        # Use thread lock to safely check and create the async lock
+        """Lazily initialize async lock within event loop context."""
         with self._thread_lock:
             if self._async_lock is None:
                 try:
                     self._async_lock = asyncio.Lock()
                 except RuntimeError as e:
                     raise RuntimeError(
-                        "Cannot create asyncio.Lock outside of async context. "
-                        "Use synchronous methods for non-async access."
+                        "Cannot create asyncio.Lock outside of async context."
                     ) from e
             return self._async_lock
 
@@ -118,7 +100,9 @@ class CookieStore:
         """Remove expired cookies. Must be called under lock."""
         for domain in list(self._cookies.keys()):
             domain_cookies = self._cookies[domain]
-            expired = [name for name, cookie in domain_cookies.items() if cookie.is_expired]
+            expired = [
+                name for name, cookie in domain_cookies.items() if cookie.is_expired
+            ]
             for name in expired:
                 del domain_cookies[name]
             if not domain_cookies:
@@ -134,17 +118,7 @@ class CookieStore:
         secure: bool = False,
         http_only: bool = False,
     ) -> None:
-        """Set a cookie (thread-safe).
-
-        Args:
-            name: Cookie name.
-            value: Cookie value.
-            domain: Cookie domain.
-            path: Cookie path.
-            expires: Expiration timestamp.
-            secure: HTTPS-only flag.
-            http_only: HTTP-only flag.
-        """
+        """Set a cookie (thread-safe)."""
         cookie = Cookie(
             name=name,
             value=value,
@@ -154,7 +128,6 @@ class CookieStore:
             secure=secure,
             http_only=http_only,
         )
-
         domain_key = self._normalize_domain(domain)
 
         with self._thread_lock:
@@ -172,17 +145,7 @@ class CookieStore:
         secure: bool = False,
         http_only: bool = False,
     ) -> None:
-        """Set a cookie (async-safe).
-
-        Args:
-            name: Cookie name.
-            value: Cookie value.
-            domain: Cookie domain.
-            path: Cookie path.
-            expires: Expiration timestamp.
-            secure: HTTPS-only flag.
-            http_only: HTTP-only flag.
-        """
+        """Set a cookie (async-safe)."""
         cookie = Cookie(
             name=name,
             value=value,
@@ -192,7 +155,6 @@ class CookieStore:
             secure=secure,
             http_only=http_only,
         )
-
         domain_key = self._normalize_domain(domain)
         async_lock = self._get_async_lock()
 
@@ -203,14 +165,7 @@ class CookieStore:
                 self._cookies[domain_key][name] = cookie
 
     def get_for_url(self, url: str) -> dict[str, str]:
-        """Get cookies applicable to URL (thread-safe).
-
-        Args:
-            url: The request URL.
-
-        Returns:
-            Dict of cookie name to value.
-        """
+        """Get cookies applicable to URL (thread-safe)."""
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         path = parsed.path or "/"
@@ -236,14 +191,7 @@ class CookieStore:
         return result
 
     async def get_for_url_async(self, url: str) -> dict[str, str]:
-        """Get cookies applicable to URL (async-safe).
-
-        Args:
-            url: The request URL.
-
-        Returns:
-            Dict of cookie name to value.
-        """
+        """Get cookies applicable to URL (async-safe)."""
         parsed = urlparse(url)
         domain = parsed.netloc.lower()
         path = parsed.path or "/"
@@ -275,12 +223,7 @@ class CookieStore:
         url: str,
         response_cookies: dict[str, str],
     ) -> None:
-        """Update cookies from response (thread-safe).
-
-        Args:
-            url: The request URL (for domain inference).
-            response_cookies: Dict of cookie name to value from response.
-        """
+        """Update cookies from response (thread-safe)."""
         domain = self._get_domain_from_url(url)
 
         with self._thread_lock:
@@ -299,12 +242,7 @@ class CookieStore:
         url: str,
         response_cookies: dict[str, str],
     ) -> None:
-        """Update cookies from response (async-safe).
-
-        Args:
-            url: The request URL (for domain inference).
-            response_cookies: Dict of cookie name to value from response.
-        """
+        """Update cookies from response (async-safe)."""
         domain = self._get_domain_from_url(url)
         async_lock = self._get_async_lock()
 
@@ -321,15 +259,7 @@ class CookieStore:
                     )
 
     def delete(self, name: str, domain: str) -> bool:
-        """Delete a specific cookie.
-
-        Args:
-            name: Cookie name.
-            domain: Cookie domain.
-
-        Returns:
-            True if cookie was deleted, False if not found.
-        """
+        """Delete a specific cookie."""
         domain_key = self._normalize_domain(domain)
 
         with self._thread_lock:
@@ -341,11 +271,7 @@ class CookieStore:
             return False
 
     def clear_domain(self, domain: str) -> None:
-        """Clear all cookies for a domain.
-
-        Args:
-            domain: Domain to clear.
-        """
+        """Clear all cookies for a domain."""
         domain_key = self._normalize_domain(domain)
 
         with self._thread_lock:
@@ -357,11 +283,7 @@ class CookieStore:
             self._cookies.clear()
 
     def get_all(self) -> dict[str, dict[str, str]]:
-        """Get all cookies organized by domain.
-
-        Returns:
-            Dict mapping domain to dict of cookie name/value pairs.
-        """
+        """Get all cookies organized by domain."""
         with self._thread_lock:
             self._cleanup_expired()
             return {
