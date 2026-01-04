@@ -212,7 +212,16 @@ class CurlBackend:
                 allow_redirects=self._follow_redirects,
             )
 
-            return self._convert_response(resp, method, url)
+            return self._convert_response(
+                resp, method, url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=cookies,
+                timeout=timeout,
+                proxy=proxy,
+            )
 
         except Exception as e:
             raise TransportError(str(e), original_error=e) from e
@@ -267,36 +276,74 @@ class CurlBackend:
                 allow_redirects=self._follow_redirects,
             )
 
-            return self._convert_response(resp, method, url)
+            return self._convert_response(
+                resp, method, url,
+                headers=final_headers,
+                params=params,
+                data=data,
+                json=json,
+                cookies=cookies,
+                timeout=timeout,
+                proxy=proxy,
+            )
 
         except Exception as e:
             raise TransportError(str(e), original_error=e) from e
 
-    def _convert_response(self, resp: Any, method: str, url: str) -> Response:
+    def _convert_response(
+        self,
+        resp: Any,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+        data: Any = None,
+        json: Any = None,
+        cookies: dict[str, str] | None = None,
+        timeout: float | None = None,
+        proxy: str | None = None,
+    ) -> Response:
         """Convert curl_cffi response to our Response model.
 
         Args:
             resp: curl_cffi Response object.
             method: Original request method.
             url: Original request URL.
+            headers: Request headers.
+            params: URL query parameters.
+            data: Form data.
+            json: JSON body.
+            cookies: Request cookies.
+            timeout: Request timeout.
+            proxy: Proxy URL.
 
         Returns:
             Response object.
         """
         # Extract cookies from response
-        cookies = {}
+        resp_cookies = {}
         if hasattr(resp, "cookies"):
             for name, value in resp.cookies.items():
-                cookies[name] = value
+                resp_cookies[name] = value
 
         return Response(
             status_code=resp.status_code,
             headers=dict(resp.headers),
             content=resp.content,
             url=str(resp.url),
-            cookies=cookies,
+            cookies=resp_cookies,
             elapsed=resp.elapsed.total_seconds() if hasattr(resp, "elapsed") and hasattr(resp.elapsed, "total_seconds") else (resp.elapsed if hasattr(resp, "elapsed") else 0.0),
-            request=Request(method=method, url=url),
+            request=Request(
+                method=method,
+                url=url,
+                headers=headers or {},
+                params=params,
+                data=data,
+                json=json,
+                cookies=cookies,
+                timeout=timeout,
+                proxy=proxy,
+            ),
             history=[],
         )
 

@@ -7,7 +7,7 @@ A unified Python HTTP client with per-request backend switching between httpx an
 - **Unified API**: Single `HTTPClient` class for all HTTP operations
 - **Per-Request Backend Switching**: Use `httpx` (default) or `curl` per request
 - **Shared Session State**: Cookies persist across both backends
-- **Browser Fingerprinting**: Optional stealth mode with TLS fingerprinting (curl backend)
+- **Browser Fingerprinting**: Optional stealth mode with browserforge headers (both backends) and TLS fingerprinting (curl backend)
 - **Sync & Async**: Both synchronous and asynchronous methods
 - **Helper Methods**: `get_status_code()`, `get_headers()`, `get_cookies()`, `get_current_proxy()`
 
@@ -124,7 +124,7 @@ All methods support these parameters:
 - `timeout`: Request-specific timeout
 - `proxy`: Request-specific proxy
 - `backend`: `"httpx"` or `"curl"` (overrides default)
-- `stealth`: Apply browser fingerprinting (curl backend only)
+- `stealth`: Apply browser fingerprinting (browserforge headers on both backends, TLS fingerprinting on curl only)
 
 ```python
 # Sync methods
@@ -175,17 +175,33 @@ client.set_proxy("http://proxy:8080")
 
 - Fast and reliable
 - HTTP/2 support
+- Browserforge headers with `stealth=True`
 - Best for APIs and general use
 
-### curl (Stealth Mode)
+### curl (Full Stealth Mode)
 
 - TLS fingerprinting via curl_cffi
-- Realistic browser headers via browserforge (auto-generated)
+- Browserforge headers with `stealth=True`
 - Custom headers override generated headers
-- Best for protected sites with anti-bot measures
+- Best for protected sites with anti-bot measures (Cloudflare, Akamai, etc.)
+
+### Stealth Mode Comparison
+
+| Feature | httpx + stealth | curl + stealth |
+|---------|-----------------|----------------|
+| Browserforge headers | ✅ | ✅ |
+| TLS fingerprinting | ❌ | ✅ |
+| HTTP/2 | ✅ | ✅ |
+| Best for | Header-only checks | Full anti-bot bypass |
 
 ```python
-# Use curl backend with stealth (browserforge headers auto-generated)
+# httpx with stealth (browserforge headers, no TLS fingerprinting)
+response = client.get(
+    "https://example.com",
+    stealth=True,
+)
+
+# curl with full stealth (browserforge headers + TLS fingerprinting)
 response = client.get(
     "https://protected-site.com",
     backend="curl",
@@ -195,7 +211,6 @@ response = client.get(
 # Custom headers override browserforge-generated headers
 response = client.get(
     "https://protected-site.com",
-    backend="curl",
     stealth=True,
     headers={"User-Agent": "MyCustomAgent/1.0"},  # Overrides generated User-Agent
 )

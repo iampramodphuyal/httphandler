@@ -68,19 +68,28 @@ class BrowserForgeGenerator:
                 "Then run: python -m browserforge update"
             )
 
-        self._header_gen = BFHeaderGenerator(
-            browser=browser,
-            os=os,
-            device=device,
-            locale=locale,
-            http_version=http_version,
-        )
+        # Only pass non-None parameters to avoid browserforge bugs
+        header_kwargs = {'http_version': http_version}
+        if browser is not None:
+            header_kwargs['browser'] = browser
+        if os is not None:
+            header_kwargs['os'] = os
+        if device is not None:
+            header_kwargs['device'] = device
+        if locale is not None:
+            header_kwargs['locale'] = locale
 
-        self._fingerprint_gen = BFFingerprintGenerator(
-            browser=browser,
-            os=os,
-            device=device,
-        )
+        self._header_gen = BFHeaderGenerator(**header_kwargs)
+
+        fingerprint_kwargs = {}
+        if browser is not None:
+            fingerprint_kwargs['browser'] = browser
+        if os is not None:
+            fingerprint_kwargs['os'] = os
+        if device is not None:
+            fingerprint_kwargs['device'] = device
+
+        self._fingerprint_gen = BFFingerprintGenerator(**fingerprint_kwargs)
 
     @classmethod
     def is_available(cls) -> bool:
@@ -104,8 +113,11 @@ class BrowserForgeGenerator:
         # Generate base headers
         generated = self._header_gen.generate()
 
-        # Convert to dict
-        result = dict(generated.headers)
+        # Handle both old API (object with .headers) and new API (direct dict)
+        if hasattr(generated, 'headers'):
+            result = dict(generated.headers)
+        else:
+            result = dict(generated)
 
         # Merge custom headers (they take precedence)
         if headers:
@@ -151,8 +163,12 @@ class BrowserForgeGenerator:
 
     def get_user_agent(self) -> str:
         """Generate a random realistic User-Agent string."""
-        headers = self._header_gen.generate()
-        return headers.headers.get("User-Agent", "")
+        generated = self._header_gen.generate()
+        # Handle both old API (object with .headers) and new API (direct dict)
+        if hasattr(generated, 'headers'):
+            return generated.headers.get("User-Agent", "")
+        else:
+            return generated.get("User-Agent", "")
 
 
 class BrowserForgeHeaderGenerator:
@@ -178,7 +194,13 @@ class BrowserForgeHeaderGenerator:
 
         self._browser = browser
         self._os = os
-        self._gen = BFHeaderGenerator(browser=browser, os=os)
+        # Only pass non-None parameters to avoid browserforge bugs
+        kwargs = {}
+        if browser is not None:
+            kwargs['browser'] = browser
+        if os is not None:
+            kwargs['os'] = os
+        self._gen = BFHeaderGenerator(**kwargs)
         self._last_referer: str | None = None
 
     def generate(
@@ -205,7 +227,11 @@ class BrowserForgeHeaderGenerator:
         """
         # Generate fresh headers
         generated = self._gen.generate()
-        headers = dict(generated.headers)
+        # Handle both old API (object with .headers) and new API (direct dict)
+        if hasattr(generated, 'headers'):
+            headers = dict(generated.headers)
+        else:
+            headers = dict(generated)
 
         # Handle referer
         effective_referer = referer or self._last_referer

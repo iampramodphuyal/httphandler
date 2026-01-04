@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.5] - 2026-01-05
+
+### Added
+- Stealth mode (`stealth=True`) now works with httpx backend using browserforge headers
+- Full request details (headers, json, params, data, cookies) now stored in `Response.request`
+
+### Fixed
+- Fixed browserforge API compatibility (handles both old object API and new dict API)
+- Fixed browserforge `os=None` parameter bug causing TypeError
+
+### Changed
+- Updated README with stealth mode comparison table
+- httpx backend now accepts `profile` parameter for header generation
+
 ## [0.5.4] - 2026-01-05
 
 ### Fixed

@@ -91,6 +91,7 @@ class HTTPClient:
                 timeout=self._timeout,
                 verify_ssl=self._verify_ssl,
                 follow_redirects=self._follow_redirects,
+                profile=self._profile,
             )
         return self._httpx_backend
 
@@ -223,6 +224,7 @@ class HTTPClient:
                 cookies=final_cookies or None,
                 timeout=final_timeout,
                 proxy=final_proxy,
+                stealth=stealth,
             )
 
         self._store_cookies(url, response.cookies)
@@ -486,6 +488,7 @@ class HTTPClient:
                 cookies=final_cookies or None,
                 timeout=final_timeout,
                 proxy=final_proxy,
+                stealth=stealth,
             )
 
         await self._store_cookies_async(url, response.cookies)
