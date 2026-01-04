@@ -50,6 +50,7 @@ class HTTPClient:
         proxy: str | None = None,
         follow_redirects: bool = True,
         profile: str = "chrome_120",
+        http_version: Literal["1.1", "2"] | None = None,
     ):
         """Initialize HTTPClient.
 
@@ -62,6 +63,7 @@ class HTTPClient:
             proxy: Default proxy URL.
             follow_redirects: Whether to follow redirects.
             profile: Browser profile for curl stealth mode.
+            http_version: HTTP version to use ("1.1" or "2"). None for auto.
         """
         self._default_backend = default_backend
         self._timeout = timeout
@@ -70,6 +72,7 @@ class HTTPClient:
         self._proxy = proxy
         self._follow_redirects = follow_redirects
         self._profile = profile
+        self._http_version = http_version
 
         # Cookie store (shared across backends)
         self._cookie_store: CookieStore | None = None
@@ -92,6 +95,7 @@ class HTTPClient:
                 verify_ssl=self._verify_ssl,
                 follow_redirects=self._follow_redirects,
                 profile=self._profile,
+                http_version=self._http_version,
             )
         return self._httpx_backend
 
@@ -108,6 +112,7 @@ class HTTPClient:
                 timeout=self._timeout,
                 verify_ssl=self._verify_ssl,
                 follow_redirects=self._follow_redirects,
+                http_version=self._http_version,
             )
         return self._curl_backend
 

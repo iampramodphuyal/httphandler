@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.6] - 2026-01-05
+
+### Added
+- HTTP version configuration (`http_version` parameter) for both httpx and curl backends
+- Supports "1.1", "2", or None (auto) for HTTP version selection
+
 ## [0.5.5] - 2026-01-05
 
 ### Added

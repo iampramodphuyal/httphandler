@@ -111,7 +111,8 @@ HTTPClient(
     verify_ssl=True,             # SSL certificate verification
     proxy=None,                  # Default proxy URL
     follow_redirects=True,       # Follow HTTP redirects
-    profile="chrome_120",        # Browser profile (curl stealth mode)
+    profile="chrome_120",        # Browser profile (stealth mode)
+    http_version=None,           # "1.1", "2", or None (auto)
 )
 ```
 

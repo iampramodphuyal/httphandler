@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 
@@ -20,24 +20,25 @@ class HttpxBackend:
         self,
         timeout: float = 30.0,
         verify_ssl: bool = True,
-        http2: bool = True,
         follow_redirects: bool = True,
         profile: str = "chrome_120",
+        http_version: Literal["1.1", "2"] | None = None,
     ):
         """Initialize httpx backend.
 
         Args:
             timeout: Default request timeout in seconds.
             verify_ssl: Whether to verify SSL certificates.
-            http2: Whether to use HTTP/2.
             follow_redirects: Whether to follow redirects.
             profile: Browser profile for stealth mode header generation.
+            http_version: HTTP version ("1.1" or "2"). None defaults to HTTP/2.
         """
         self._timeout = timeout
         self._verify_ssl = verify_ssl
-        self._http2 = http2
         self._follow_redirects = follow_redirects
         self._profile_name = profile
+        # httpx uses http2=True/False; default to HTTP/2 if not specified
+        self._http2 = http_version != "1.1"
         self._sync_client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
         self._header_generator = None

@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from ..models import Request, Response, TransportError
 
 # Optional curl_cffi import
 try:
     from curl_cffi.requests import Session, AsyncSession
+    from curl_cffi import CurlHttpVersion
     CURL_AVAILABLE = True
 except ImportError:
     CURL_AVAILABLE = False
     Session = None
     AsyncSession = None
+    CurlHttpVersion = None
 
 
 class CurlBackend:
@@ -28,6 +30,7 @@ class CurlBackend:
         timeout: float = 30.0,
         verify_ssl: bool = True,
         follow_redirects: bool = True,
+        http_version: Literal["1.1", "2"] | None = None,
     ):
         """Initialize curl backend.
 
@@ -36,6 +39,7 @@ class CurlBackend:
             timeout: Default request timeout in seconds.
             verify_ssl: Whether to verify SSL certificates.
             follow_redirects: Whether to follow redirects.
+            http_version: HTTP version ("1.1" or "2"). None for auto.
 
         Raises:
             ImportError: If curl_cffi is not installed.
@@ -51,6 +55,13 @@ class CurlBackend:
         self._timeout = timeout
         self._verify_ssl = verify_ssl
         self._follow_redirects = follow_redirects
+
+        # Map http_version string to CurlHttpVersion enum
+        self._http_version = None
+        if http_version == "1.1":
+            self._http_version = CurlHttpVersion.V1_1
+        elif http_version == "2":
+            self._http_version = CurlHttpVersion.V2_0
 
         # Lazy-initialized sessions
         self._sync_session: Session | None = None
@@ -210,6 +221,7 @@ class CurlBackend:
                 timeout=timeout or self._timeout,
                 proxies={"all": proxy} if proxy else None,
                 allow_redirects=self._follow_redirects,
+                http_version=self._http_version,
             )
 
             return self._convert_response(
@@ -274,6 +286,7 @@ class CurlBackend:
                 timeout=timeout or self._timeout,
                 proxies={"all": proxy} if proxy else None,
                 allow_redirects=self._follow_redirects,
+                http_version=self._http_version,
             )
 
             return self._convert_response(
