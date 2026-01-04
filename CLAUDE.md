@@ -172,9 +172,13 @@ class CurlBackend:
 ```
 
 When `stealth=True`:
-- Applies browser-like headers via `HeaderGenerator`
+- Generates realistic browser headers via browserforge (if installed) or static profiles
+- Custom headers override generated headers (custom takes precedence)
 - Uses TLS fingerprinting via curl_cffi's `impersonate` parameter
 - Orders headers according to browser profile
+
+When `stealth=False`:
+- Only uses custom headers provided by user (or empty)
 
 ## CookieStore (Dual-Lock Pattern)
 

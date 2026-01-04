@@ -180,15 +180,24 @@ client.set_proxy("http://proxy:8080")
 ### curl (Stealth Mode)
 
 - TLS fingerprinting via curl_cffi
-- Browser-like headers and behavior
+- Realistic browser headers via browserforge (auto-generated)
+- Custom headers override generated headers
 - Best for protected sites with anti-bot measures
 
 ```python
-# Use curl backend with stealth
+# Use curl backend with stealth (browserforge headers auto-generated)
 response = client.get(
     "https://protected-site.com",
     backend="curl",
     stealth=True,
+)
+
+# Custom headers override browserforge-generated headers
+response = client.get(
+    "https://protected-site.com",
+    backend="curl",
+    stealth=True,
+    headers={"User-Agent": "MyCustomAgent/1.0"},  # Overrides generated User-Agent
 )
 ```
 

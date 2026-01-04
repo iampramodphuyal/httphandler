@@ -84,13 +84,24 @@ class CurlBackend:
         }
         return profile_map.get(profile, profile.replace("_", ""))
 
+    def _get_browser_from_profile(self) -> str:
+        """Extract browser name from profile (e.g., 'chrome_120' -> 'chrome')."""
+        return self._profile_name.split("_")[0]
+
     def _get_header_generator(self):
-        """Get or create header generator (lazy initialization)."""
+        """Get or create header generator (lazy initialization).
+
+        Uses browserforge by default for realistic headers, with fallback
+        to static profiles if browserforge is not installed.
+        """
         if self._header_generator is None:
             try:
-                from ..fingerprint import HeaderGenerator, get_profile
-                profile = get_profile(self._profile_name)
-                self._header_generator = HeaderGenerator(profile)
+                from .._fingerprint import create_header_generator
+                # Use browserforge by default, with fallback to static profiles
+                self._header_generator = create_header_generator(
+                    use_browserforge=True,
+                    browser=self._get_browser_from_profile(),
+                )
             except ImportError:
                 # Fingerprint module not available, use None
                 pass
