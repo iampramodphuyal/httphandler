@@ -7,8 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from http_client.safety import CookieStore
-from http_client.safety.cookie_store import Cookie
+from http_client._cookies import CookieStore, Cookie
 
 
 class TestCookie:

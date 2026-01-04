@@ -32,20 +32,26 @@ from .client import HTTPClient
 from .models import (
     Request,
     Response,
+    BatchResult,
     HTTPClientError,
     TransportError,
     HTTPError,
+    RateLimitExceeded,
+    AllProxiesFailed,
     MaxRetriesExceeded,
 )
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 __all__ = [
     "HTTPClient",
     "Request",
     "Response",
+    "BatchResult",
     "HTTPClientError",
     "TransportError",
     "HTTPError",
+    "RateLimitExceeded",
+    "AllProxiesFailed",
     "MaxRetriesExceeded",
 ]

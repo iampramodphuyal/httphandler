@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "http-client"
-version = "0.5.3"
+version = "0.5.4"
 description = "HTTP client package for web scraping with dual execution model support"
 readme = "README.md"
 license = {text = "MIT"}

@@ -2,13 +2,13 @@
 
 import pytest
 
-from http_client.fingerprint import (
+from http_client._fingerprint import (
     BrowserProfile,
     PROFILES,
     get_profile,
     HeaderGenerator,
 )
-from http_client.fingerprint.profiles import (
+from http_client._fingerprint.profiles import (
     CHROME_120,
     CHROME_119,
     FIREFOX_121,
@@ -16,7 +16,7 @@ from http_client.fingerprint.profiles import (
     EDGE_120,
     list_profiles,
 )
-from http_client.fingerprint.headers import get_minimal_headers, get_api_headers
+from http_client._fingerprint.headers import get_minimal_headers, get_api_headers
 
 
 class TestBrowserProfile:

@@ -136,14 +136,14 @@ class HTTPClient:
 
     def _store_cookies(self, url: str, response_cookies: dict[str, str]) -> None:
         """Store cookies from response."""
-        if self._cookie_store and response_cookies:
+        if self._cookie_store is not None and response_cookies:
             self._cookie_store.update_from_response(url, response_cookies)
 
     async def _store_cookies_async(
         self, url: str, response_cookies: dict[str, str]
     ) -> None:
         """Store cookies from response (async)."""
-        if self._cookie_store and response_cookies:
+        if self._cookie_store is not None and response_cookies:
             await self._cookie_store.update_from_response_async(url, response_cookies)
 
     def _merge_headers(self, headers: dict | None) -> dict[str, str]:
