@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "http-client"
-version = "0.5.2"
+version = "0.5.3"
 description = "HTTP client package for web scraping with dual execution model support"
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,7 +36,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "httpx>=0.25.0",
+    "httpx[http2]>=0.25.0",
     "curl_cffi>=0.5.0",
     "browserforge>=1.0.0",
 ]

@@ -150,11 +150,15 @@ class CurlBackend:
 
         generator = self._get_header_generator()
         if generator:
-            return generator.generate(
-                url=url,
-                method=method,
-                custom_headers=headers,
-            )
+            try:
+                return generator.generate(
+                    url=url,
+                    method=method,
+                    custom_headers=headers,
+                )
+            except Exception:
+                # Fallback to custom headers if generator fails
+                pass
 
         return headers or {}
 
@@ -291,7 +295,7 @@ class CurlBackend:
             content=resp.content,
             url=str(resp.url),
             cookies=cookies,
-            elapsed=resp.elapsed if hasattr(resp, "elapsed") else 0.0,
+            elapsed=resp.elapsed.total_seconds() if hasattr(resp, "elapsed") and hasattr(resp.elapsed, "total_seconds") else (resp.elapsed if hasattr(resp, "elapsed") else 0.0),
             request=Request(method=method, url=url),
             history=[],
         )
