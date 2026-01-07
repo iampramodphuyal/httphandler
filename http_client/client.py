@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .models import Response
+from ._backends import CURL_AVAILABLE, CurlBackend, HttpxBackend
 from ._cookies import CookieStore
-from ._backends import HttpxBackend, CurlBackend, CURL_AVAILABLE
+from ._proxy import GenericProvider, ProxyManager, ProxyProvider
+from .models import Response
 
 
 class HTTPClient:
@@ -87,6 +88,9 @@ class HTTPClient:
         self._last_response: Response | None = None
         self._closed = False
 
+        # Proxy manager (lazy-initialized)
+        self._proxy_manager: ProxyManager | None = None
+
     def _get_httpx_backend(self) -> HttpxBackend:
         """Get or create httpx backend."""
         if self._httpx_backend is None:
@@ -115,6 +119,12 @@ class HTTPClient:
                 http_version=self._http_version,
             )
         return self._curl_backend
+
+    def _get_proxy_manager(self) -> ProxyManager:
+        """Get or create proxy manager."""
+        if self._proxy_manager is None:
+            self._proxy_manager = ProxyManager()
+        return self._proxy_manager
 
     def _resolve_backend(self, backend: str | None) -> str:
         """Resolve which backend to use."""
@@ -201,36 +211,47 @@ class HTTPClient:
         final_headers = self._merge_headers(headers)
         final_cookies = self._prepare_cookies(url, cookies)
         final_timeout = timeout or self._timeout
-        final_proxy = proxy or self._proxy
+        final_proxy = proxy or self.get_current_proxy()
 
-        if backend_name == "curl":
-            backend_impl = self._get_curl_backend()
-            response = backend_impl.request_sync(
-                method=method,
-                url=url,
-                headers=final_headers,
-                params=params,
-                data=data,
-                json=json,
-                cookies=final_cookies or None,
-                timeout=final_timeout,
-                proxy=final_proxy,
-                stealth=stealth,
-            )
-        else:
-            backend_impl = self._get_httpx_backend()
-            response = backend_impl.request_sync(
-                method=method,
-                url=url,
-                headers=final_headers,
-                params=params,
-                data=data,
-                json=json,
-                cookies=final_cookies or None,
-                timeout=final_timeout,
-                proxy=final_proxy,
-                stealth=stealth,
-            )
+        try:
+            if backend_name == "curl":
+                backend_impl = self._get_curl_backend()
+                response = backend_impl.request_sync(
+                    method=method,
+                    url=url,
+                    headers=final_headers,
+                    params=params,
+                    data=data,
+                    json=json,
+                    cookies=final_cookies or None,
+                    timeout=final_timeout,
+                    proxy=final_proxy,
+                    stealth=stealth,
+                )
+            else:
+                backend_impl = self._get_httpx_backend()
+                response = backend_impl.request_sync(
+                    method=method,
+                    url=url,
+                    headers=final_headers,
+                    params=params,
+                    data=data,
+                    json=json,
+                    cookies=final_cookies or None,
+                    timeout=final_timeout,
+                    proxy=final_proxy,
+                    stealth=stealth,
+                )
+
+            # Record success for proxy health tracking
+            if self._proxy_manager and self._proxy_manager.has_proxy:
+                self._proxy_manager.record_success(final_proxy, response.elapsed)
+
+        except Exception as e:
+            # Record failure for proxy health tracking
+            if self._proxy_manager and self._proxy_manager.has_proxy:
+                self._proxy_manager.record_failure(final_proxy, str(e))
+            raise
 
         self._store_cookies(url, response.cookies)
         self._last_response = response
@@ -465,36 +486,49 @@ class HTTPClient:
         final_headers = self._merge_headers(headers)
         final_cookies = await self._prepare_cookies_async(url, cookies)
         final_timeout = timeout or self._timeout
-        final_proxy = proxy or self._proxy
+        final_proxy = proxy or self.get_current_proxy()
 
-        if backend_name == "curl":
-            backend_impl = self._get_curl_backend()
-            response = await backend_impl.request_async(
-                method=method,
-                url=url,
-                headers=final_headers,
-                params=params,
-                data=data,
-                json=json,
-                cookies=final_cookies or None,
-                timeout=final_timeout,
-                proxy=final_proxy,
-                stealth=stealth,
-            )
-        else:
-            backend_impl = self._get_httpx_backend()
-            response = await backend_impl.request_async(
-                method=method,
-                url=url,
-                headers=final_headers,
-                params=params,
-                data=data,
-                json=json,
-                cookies=final_cookies or None,
-                timeout=final_timeout,
-                proxy=final_proxy,
-                stealth=stealth,
-            )
+        try:
+            if backend_name == "curl":
+                backend_impl = self._get_curl_backend()
+                response = await backend_impl.request_async(
+                    method=method,
+                    url=url,
+                    headers=final_headers,
+                    params=params,
+                    data=data,
+                    json=json,
+                    cookies=final_cookies or None,
+                    timeout=final_timeout,
+                    proxy=final_proxy,
+                    stealth=stealth,
+                )
+            else:
+                backend_impl = self._get_httpx_backend()
+                response = await backend_impl.request_async(
+                    method=method,
+                    url=url,
+                    headers=final_headers,
+                    params=params,
+                    data=data,
+                    json=json,
+                    cookies=final_cookies or None,
+                    timeout=final_timeout,
+                    proxy=final_proxy,
+                    stealth=stealth,
+                )
+
+            # Record success for proxy health tracking
+            if self._proxy_manager and self._proxy_manager.has_proxy:
+                await self._proxy_manager.record_success_async(
+                    final_proxy, response.elapsed
+                )
+
+        except Exception as e:
+            # Record failure for proxy health tracking
+            if self._proxy_manager and self._proxy_manager.has_proxy:
+                await self._proxy_manager.record_failure_async(final_proxy, str(e))
+            raise
 
         await self._store_cookies_async(url, response.cookies)
         self._last_response = response
@@ -702,7 +736,26 @@ class HTTPClient:
         return dict(self._last_response.cookies) if self._last_response else None
 
     def get_current_proxy(self) -> str | None:
-        """Get currently configured proxy."""
+        """Get currently configured proxy URL.
+
+        Checks proxy manager first (if active), then falls back to default proxy.
+
+        Returns:
+            Proxy URL string or None if no proxy set
+        """
+        # Check manager first (takes precedence)
+        if self._proxy_manager and self._proxy_manager.has_proxy:
+            return self._proxy_manager.get_current_proxy()
+        return self._proxy
+
+    async def get_current_proxy_async(self) -> str | None:
+        """Get currently configured proxy URL (async version).
+
+        Returns:
+            Proxy URL string or None if no proxy set
+        """
+        if self._proxy_manager and self._proxy_manager.has_proxy:
+            return await self._proxy_manager.get_current_proxy_async()
         return self._proxy
 
     def get_elapsed(self) -> float | None:
@@ -741,9 +794,181 @@ class HTTPClient:
         """Remove a default header."""
         self._default_headers.pop(name, None)
 
-    def set_proxy(self, proxy: str | None) -> None:
-        """Set the default proxy."""
-        self._proxy = proxy
+    # ========== Proxy Management ==========
+
+    def set_proxy(
+        self,
+        provider: str | ProxyProvider | None = None,
+        proxy_type: str | None = None,
+        country: str | None = None,
+        protocol: str = "http",
+        *,
+        url: str | None = None,
+        proxies: list[str] | None = None,
+        count: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Set proxy configuration.
+
+        Simple usage (backward compatible):
+            client.set_proxy("http://proxy:8080")  # Old API
+            client.set_proxy(url="http://proxy:8080")  # New API
+
+        With provider:
+            client.set_proxy(provider="generic", country="US")
+
+        With custom proxies for rotation:
+            client.set_proxy(proxies=["http://p1:8080", "http://p2:8080"])
+
+        Args:
+            provider: Provider name or ProxyProvider instance (or proxy URL for backward compat)
+            proxy_type: Type of proxy (datacenter, residential)
+            country: Country code (e.g., "US")
+            protocol: Proxy protocol (http, https, socks5)
+            url: Direct proxy URL (simple usage)
+            proxies: List of proxy URLs for rotation pool
+            count: Number of proxies to fetch from provider
+            **kwargs: Provider-specific options
+        """
+        # Backward compatibility: set_proxy(None) clears the proxy
+        if provider is None and url is None and proxies is None:
+            self._proxy = None
+            if self._proxy_manager:
+                self._proxy_manager.reset_proxy()
+            return
+
+        # Backward compatibility: if first arg looks like a URL, treat it as url
+        if (
+            isinstance(provider, str)
+            and provider.startswith(("http://", "https://", "socks4://", "socks5://"))
+            and not proxy_type
+            and not country
+            and not proxies
+        ):
+            self._proxy = provider
+            return
+
+        # Simple URL case (new API with url=)
+        if url and not provider and not proxies:
+            self._proxy = url
+            return
+
+        manager = self._get_proxy_manager()
+
+        # If proxies list provided, create/update generic provider
+        if proxies:
+            generic = GenericProvider(proxies=proxies)
+            manager.add_provider(generic)
+            manager.set_proxy(
+                provider="generic",
+                proxy_type=proxy_type,
+                country=country,
+                protocol=protocol,
+                count=count or len(proxies),
+                **kwargs,
+            )
+            return
+
+        # If provider is instance, add it
+        if isinstance(provider, ProxyProvider):
+            manager.add_provider(provider)
+            provider = provider.name
+
+        if provider:
+            manager.set_proxy(
+                provider=provider,
+                proxy_type=proxy_type,
+                country=country,
+                protocol=protocol,
+                count=count,
+                **kwargs,
+            )
+
+    async def set_proxy_async(
+        self,
+        provider: str | ProxyProvider | None = None,
+        proxy_type: str | None = None,
+        country: str | None = None,
+        protocol: str = "http",
+        *,
+        url: str | None = None,
+        proxies: list[str] | None = None,
+        count: int | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Set proxy configuration (async version)."""
+        if url and not provider and not proxies:
+            self._proxy = url
+            return
+
+        manager = self._get_proxy_manager()
+
+        if proxies:
+            generic = GenericProvider(proxies=proxies)
+            manager.add_provider(generic)
+            await manager.set_proxy_async(
+                provider="generic",
+                proxy_type=proxy_type,
+                country=country,
+                protocol=protocol,
+                count=count or len(proxies),
+                **kwargs,
+            )
+            return
+
+        if isinstance(provider, ProxyProvider):
+            manager.add_provider(provider)
+            provider = provider.name
+
+        if provider:
+            await manager.set_proxy_async(
+                provider=provider,
+                proxy_type=proxy_type,
+                country=country,
+                protocol=protocol,
+                count=count,
+                **kwargs,
+            )
+
+    def reset_proxy(self) -> None:
+        """Remove proxy configuration."""
+        self._proxy = None
+        if self._proxy_manager:
+            self._proxy_manager.reset_proxy()
+
+    async def reset_proxy_async(self) -> None:
+        """Remove proxy configuration (async)."""
+        self._proxy = None
+        if self._proxy_manager:
+            await self._proxy_manager.reset_proxy_async()
+
+    def switch_proxy(self) -> str | None:
+        """Rotate to next proxy in pool.
+
+        Returns:
+            New proxy URL or None if no pool configured
+        """
+        if self._proxy_manager and self._proxy_manager.has_proxy:
+            config = self._proxy_manager.switch_proxy()
+            return config.url if config else None
+        return None
+
+    async def switch_proxy_async(self) -> str | None:
+        """Rotate to next proxy (async)."""
+        if self._proxy_manager and self._proxy_manager.has_proxy:
+            config = await self._proxy_manager.switch_proxy_async()
+            return config.url if config else None
+        return None
+
+    def add_proxy_provider(self, provider: ProxyProvider) -> None:
+        """Add a proxy provider to the manager."""
+        manager = self._get_proxy_manager()
+        manager.add_provider(provider)
+
+    @property
+    def proxy_manager(self) -> ProxyManager:
+        """Access the proxy manager directly for advanced usage."""
+        return self._get_proxy_manager()
 
     # ========== Context Managers ==========
 

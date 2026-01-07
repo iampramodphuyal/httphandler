@@ -34,17 +34,24 @@ Unified Python HTTP client with per-request backend switching between httpx and 
 
 ```
 http_client/
-├── __init__.py          # Public API: HTTPClient, Response, exceptions
+├── __init__.py          # Public API: HTTPClient, Response, Request, BatchResult, exceptions
 ├── client.py            # Unified HTTPClient class
-├── models.py            # Request, Response, exception classes
+├── models.py            # Request, Response, BatchResult, exception classes
 ├── _backends/           # Backend implementations
 │   ├── httpx_backend.py # httpx wrapper (sync + async)
 │   └── curl_backend.py  # curl_cffi wrapper with stealth/fingerprinting
 ├── _cookies.py          # Thread-safe + async-safe cookie storage (dual-lock pattern)
-└── _fingerprint/        # Browser profiles for stealth mode
-    ├── profiles.py      # Browser profile definitions (Chrome, Firefox, Safari, Edge)
-    ├── headers.py       # Header generation and ordering
-    └── browserforge_adapter.py  # Browserforge integration for realistic headers
+├── _fingerprint/        # Browser profiles for stealth mode
+│   ├── profiles.py      # Browser profile definitions (Chrome, Firefox, Safari, Edge)
+│   ├── headers.py       # Header generation and ordering
+│   └── browserforge_adapter.py  # Browserforge integration for realistic headers
+└── _proxy/              # Proxy management with provider abstraction
+    ├── models.py        # ProxyConfig, ProxyHealth, ProxyPoolStats
+    ├── exceptions.py    # ProxyError hierarchy
+    ├── base.py          # Abstract ProxyProvider base class
+    ├── manager.py       # ProxyManager (pool, rotation, health tracking)
+    └── providers/       # Provider implementations
+        └── generic.py   # GenericProvider for custom proxy URLs
 ```
 
 ## Key Design Patterns
@@ -83,6 +90,34 @@ client = HTTPClient(http_version="1.1")  # Force HTTP/1.1
 client = HTTPClient(http_version="2")    # Force HTTP/2
 client = HTTPClient()                     # Auto (HTTP/2 for httpx, auto for curl)
 ```
+
+### Proxy Management
+Modular proxy system with provider abstraction, round-robin rotation, and health tracking.
+
+```python
+# Simple proxy URL (backward compatible)
+client.set_proxy("http://proxy:8080")
+
+# Multiple proxies with rotation
+client.set_proxy(proxies=["http://p1:8080", "http://p2:8080", "http://p3:8080"])
+client.switch_proxy()  # Rotate to next healthy proxy
+
+# With provider and filters
+provider = GenericProvider(proxies=[
+    {"url": "http://us1:8080", "country": "US"},
+    {"url": "http://gb1:8080", "country": "GB"},
+])
+client.add_proxy_provider(provider)
+client.set_proxy(provider="generic", country="US")
+
+# Check/remove proxy
+current = client.get_current_proxy()  # Returns URL string or None
+client.reset_proxy()  # Disable proxy
+```
+
+**Health Tracking:** 3 consecutive failures = 60s cooldown, auto-recovery when cooldown expires.
+
+**Extending with Custom Providers:** Subclass `ProxyProvider` for BrightData, Oxylabs, etc.
 
 ## Core Principles
 

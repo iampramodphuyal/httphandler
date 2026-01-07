@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.7] - 2026-01-08
+
+### Added
+- Modular proxy management system with provider abstraction (`_proxy/` module)
+- `ProxyManager` class with round-robin rotation and health tracking
+- `GenericProvider` for custom proxy URLs with country/type filtering
+- Abstract `ProxyProvider` base class for extending with custom providers
+- New proxy methods: `set_proxy()`, `reset_proxy()`, `switch_proxy()`, `get_current_proxy()`
+- Async variants: `set_proxy_async()`, `reset_proxy_async()`, `switch_proxy_async()`, `get_current_proxy_async()`
+- Proxy health tracking with auto-failover (3 failures = 60s cooldown)
+- `ProxyConfig`, `ProxyHealth`, `ProxyPoolStats` data models
+- `ProxyError` exception hierarchy
+- Comprehensive test suite for proxy module (63 tests)
+
+### Changed
+- `set_proxy()` now supports multiple signatures: URL string, proxies list, or provider-based
+- Backward compatible with existing `set_proxy("http://proxy:8080")` usage
+- Updated README with proxy management documentation
+- Updated CLAUDE.md with proxy module architecture
+
 ## [0.5.6] - 2026-01-05
 
 ### Added

@@ -30,28 +30,48 @@ Async usage:
 
 from .client import HTTPClient
 from .models import (
-    Request,
-    Response,
+    AllProxiesFailed,
     BatchResult,
     HTTPClientError,
-    TransportError,
     HTTPError,
-    RateLimitExceeded,
-    AllProxiesFailed,
     MaxRetriesExceeded,
+    RateLimitExceeded,
+    Request,
+    Response,
+    TransportError,
+)
+from ._proxy import (
+    GenericProvider,
+    NoHealthyProxiesError,
+    ProxyConfig,
+    ProxyError,
+    ProxyManager,
+    ProxyPoolExhaustedError,
+    ProxyProvider,
 )
 
-__version__ = "0.5.4"
+__version__ = "0.5.7"
 
 __all__ = [
+    # Client
     "HTTPClient",
+    # Models
     "Request",
     "Response",
     "BatchResult",
+    # HTTP Exceptions
     "HTTPClientError",
     "TransportError",
     "HTTPError",
     "RateLimitExceeded",
     "AllProxiesFailed",
     "MaxRetriesExceeded",
+    # Proxy Management
+    "ProxyManager",
+    "ProxyProvider",
+    "GenericProvider",
+    "ProxyConfig",
+    "ProxyError",
+    "NoHealthyProxiesError",
+    "ProxyPoolExhaustedError",
 ]

@@ -8,6 +8,7 @@ A unified Python HTTP client with per-request backend switching between httpx an
 - **Per-Request Backend Switching**: Use `httpx` (default) or `curl` per request
 - **Shared Session State**: Cookies persist across both backends
 - **Browser Fingerprinting**: Optional stealth mode with browserforge headers (both backends) and TLS fingerprinting (curl backend)
+- **Proxy Management**: Provider-based proxy system with rotation, health tracking, and auto-failover
 - **Sync & Async**: Both synchronous and asynchronous methods
 - **Helper Methods**: `get_status_code()`, `get_headers()`, `get_cookies()`, `get_current_proxy()`
 
@@ -162,12 +163,70 @@ client.clear_cookies()        # Clear all cookies
 client.clear_cookies("domain.com")  # Clear domain-specific
 ```
 
-### Header & Proxy Management
+### Header Management
 
 ```python
 client.set_default_header("X-Custom", "value")
 client.remove_default_header("X-Custom")
+```
+
+### Proxy Management
+
+```python
+# Simple proxy URL
 client.set_proxy("http://proxy:8080")
+
+# Multiple proxies with rotation
+client.set_proxy(proxies=["http://p1:8080", "http://p2:8080", "http://p3:8080"])
+
+# Rotate to next proxy
+client.switch_proxy()
+
+# Check current proxy
+print(client.get_current_proxy())  # "http://p2:8080"
+
+# Remove proxy
+client.reset_proxy()
+```
+
+### Advanced Proxy Management
+
+```python
+from http_client import HTTPClient, GenericProvider
+
+# Create provider with metadata
+provider = GenericProvider(proxies=[
+    {"url": "http://us1:8080", "country": "US", "proxy_type": "datacenter"},
+    {"url": "http://us2:8080", "country": "US", "proxy_type": "datacenter"},
+    {"url": "http://gb1:8080", "country": "GB", "proxy_type": "residential"},
+])
+
+client = HTTPClient()
+client.add_proxy_provider(provider)
+
+# Set proxy with filters
+client.set_proxy(provider="generic", country="US", proxy_type="datacenter")
+
+# Access proxy manager for stats
+stats = client.proxy_manager.get_stats()
+print(f"Healthy: {stats.healthy_proxies}/{stats.total_proxies}")
+print(f"Success rate: {stats.success_rate:.1%}")
+```
+
+**Features:**
+- **Round-robin rotation**: `switch_proxy()` cycles through healthy proxies
+- **Health tracking**: Proxies marked unhealthy after 3 consecutive failures
+- **Auto-failover**: Unhealthy proxies get 60s cooldown, then auto-recover
+- **Provider abstraction**: Easy to extend with custom providers (BrightData, Oxylabs, etc.)
+
+### Async Proxy Methods
+
+```python
+async with HTTPClient() as client:
+    await client.set_proxy_async(proxies=["http://p1:8080", "http://p2:8080"])
+    proxy = await client.get_current_proxy_async()
+    await client.switch_proxy_async()
+    await client.reset_proxy_async()
 ```
 
 ## Backends
@@ -266,7 +325,11 @@ http_client/
 │   ├── httpx_backend.py # httpx wrapper
 │   └── curl_backend.py  # curl_cffi wrapper with stealth
 ├── _cookies.py          # Thread-safe cookie storage
-└── _fingerprint/        # Browser profiles for stealth mode
+├── _fingerprint/        # Browser profiles for stealth mode
+└── _proxy/              # Proxy management with provider abstraction
+    ├── manager.py       # ProxyManager (pool, rotation, health)
+    ├── base.py          # Abstract ProxyProvider class
+    └── providers/       # Provider implementations
 ```
 
 ## Development
