@@ -42,6 +42,7 @@ class HttpxBackend:
         self._sync_client: httpx.Client | None = None
         self._async_client: httpx.AsyncClient | None = None
         self._header_generator = None
+        self._last_prepared_headers: dict[str, str] = {}
 
     def _get_browser_from_profile(self) -> str:
         """Extract browser name from profile (e.g., 'chrome_120' -> 'chrome')."""
@@ -154,6 +155,7 @@ class HttpxBackend:
             TransportError: On connection/transport errors.
         """
         final_headers = self._prepare_headers(url, method, headers, stealth)
+        self._last_prepared_headers = final_headers
 
         try:
             # Use proxy-specific client if proxy provided
@@ -235,6 +237,7 @@ class HttpxBackend:
             TransportError: On connection/transport errors.
         """
         final_headers = self._prepare_headers(url, method, headers, stealth)
+        self._last_prepared_headers = final_headers
 
         try:
             # Use proxy-specific client if proxy provided

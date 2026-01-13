@@ -9,6 +9,44 @@ from urllib.parse import urlparse
 from .profiles import BrowserProfile, get_profile
 
 
+def merge_headers_case_insensitive(
+    base_headers: dict[str, str],
+    custom_headers: dict[str, str] | None,
+) -> dict[str, str]:
+    """Merge custom headers into base headers with case-insensitive override.
+
+    When a custom header key matches a base header key (case-insensitive),
+    the base header is removed and replaced with the custom header.
+
+    Args:
+        base_headers: Base headers dict (will be modified in place).
+        custom_headers: Custom headers to merge (take precedence).
+
+    Returns:
+        Merged headers dict.
+    """
+    if not custom_headers:
+        return base_headers
+
+    # Build lowercase lookup for base headers
+    base_lower_map = {k.lower(): k for k in base_headers}
+
+    for custom_key, custom_value in custom_headers.items():
+        custom_key_lower = custom_key.lower()
+
+        # If a base header exists with same name (case-insensitive), remove it
+        if custom_key_lower in base_lower_map:
+            original_key = base_lower_map[custom_key_lower]
+            del base_headers[original_key]
+            # Update the map since we removed the key
+            base_lower_map[custom_key_lower] = custom_key
+
+        # Add the custom header
+        base_headers[custom_key] = custom_value
+
+    return base_headers
+
+
 class HeaderGenerator:
     """Generate and order headers to match browser fingerprints.
 
@@ -70,9 +108,8 @@ class HeaderGenerator:
         if effective_referer:
             headers["Referer"] = effective_referer
 
-        # Merge custom headers (they take precedence)
-        if custom_headers:
-            headers.update(custom_headers)
+        # Merge custom headers (case-insensitive override)
+        merge_headers_case_insensitive(headers, custom_headers)
 
         # Order headers according to profile
         ordered = self._order_headers(headers)

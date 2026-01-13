@@ -8,6 +8,7 @@ A unified Python HTTP client with per-request backend switching between httpx an
 - **Per-Request Backend Switching**: Use `httpx` (default) or `curl` per request
 - **Shared Session State**: Cookies persist across both backends
 - **Browser Fingerprinting**: Optional stealth mode with browserforge headers (both backends) and TLS fingerprinting (curl backend)
+- **Verbose/Debug Mode**: Detailed request/response logging for debugging web scraping
 - **Proxy Management**: Provider-based proxy system with rotation, health tracking, and auto-failover
 - **Sync & Async**: Both synchronous and asynchronous methods
 - **Helper Methods**: `get_status_code()`, `get_headers()`, `get_cookies()`, `get_current_proxy()`
@@ -114,6 +115,8 @@ HTTPClient(
     follow_redirects=True,       # Follow HTTP redirects
     profile="chrome_120",        # Browser profile (stealth mode)
     http_version=None,           # "1.1", "2", or None (auto)
+    verbose=False,               # Enable verbose debug output
+    debug_callback=None,         # Callback for debug info (DebugInfo)
 )
 ```
 
@@ -168,6 +171,55 @@ client.clear_cookies("domain.com")  # Clear domain-specific
 ```python
 client.set_default_header("X-Custom", "value")
 client.remove_default_header("X-Custom")
+```
+
+### Verbose/Debug Mode
+
+Enable verbose mode to see detailed request/response information - useful for debugging web scraping and anti-bot bypass:
+
+```python
+from http_client import HTTPClient, DebugInfo
+
+# Enable at initialization
+client = HTTPClient(verbose=True)
+
+# Or enable/disable at runtime
+client.verbose = True   # Enable
+client.verbose = False  # Disable
+
+# Check status
+if client.verbose:
+    print("Verbose mode is on")
+
+# Make request - debug output printed to stderr
+response = client.get("https://example.com", backend="curl", stealth=True)
+```
+
+**Verbose output includes:**
+- Request method, URL, backend used
+- Stealth mode status and browser profile
+- HTTP version
+- All request headers (including browserforge-generated)
+- Cookies sent
+- Proxy used
+- Response status and timing
+- Response headers
+- Cookies received
+- TLS impersonate info (curl backend)
+- Body preview (first 500 chars)
+
+**Programmatic capture with callback:**
+
+```python
+from http_client import HTTPClient, DebugInfo
+
+def my_callback(info: DebugInfo):
+    print(f"{info.method} {info.url} -> {info.status_code} ({info.elapsed:.2f}s)")
+    print(f"Headers sent: {list(info.request_headers.keys())}")
+
+client = HTTPClient(verbose=True, debug_callback=my_callback)
+client.get("https://httpbin.org/get")
+client.close()
 ```
 
 ### Proxy Management
@@ -268,13 +320,18 @@ response = client.get(
     stealth=True,
 )
 
-# Custom headers override browserforge-generated headers
+# Custom headers override browserforge-generated headers (case-insensitive)
 response = client.get(
     "https://protected-site.com",
     stealth=True,
-    headers={"User-Agent": "MyCustomAgent/1.0"},  # Overrides generated User-Agent
+    headers={"user-agent": "MyCustomAgent/1.0"},  # Overrides generated User-Agent
 )
 ```
+
+**Browserforge features:**
+- Desktop platforms only: Windows, macOS, Linux (equal distribution)
+- Custom headers override generated headers (case-insensitive matching)
+- Realistic Sec-Fetch-*, Accept-*, and security headers
 
 Available browser profiles for stealth mode:
 - Chrome: `chrome_120`, `chrome_119`, `chrome_118`
@@ -318,9 +375,10 @@ async with HTTPClient() as client:
 
 ```
 http_client/
-├── __init__.py          # Public API: HTTPClient, Response, exceptions
+├── __init__.py          # Public API: HTTPClient, Response, DebugInfo, exceptions
 ├── client.py            # Unified HTTPClient class
 ├── models.py            # Request, Response, exceptions
+├── _debug.py            # DebugInfo and verbose output handling
 ├── _backends/           # Internal backend implementations
 │   ├── httpx_backend.py # httpx wrapper
 │   └── curl_backend.py  # curl_cffi wrapper with stealth

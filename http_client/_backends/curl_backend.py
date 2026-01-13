@@ -69,6 +69,7 @@ class CurlBackend:
 
         # Header generator for stealth mode
         self._header_generator = None
+        self._last_prepared_headers: dict[str, str] = {}
 
     def _get_impersonate_string(self, profile: str) -> str:
         """Convert profile name to curl_cffi impersonate string.
@@ -145,20 +146,26 @@ class CurlBackend:
         headers: dict[str, str] | None,
         stealth: bool,
     ) -> dict[str, str]:
-        """Prepare headers with optional stealth mode.
+        """Prepare headers for curl backend.
+
+        Since curl_cffi's impersonate feature always injects browser-like
+        headers at the TLS layer, we always generate browserforge headers
+        to provide accurate debug output. The stealth flag controls whether
+        we use full browserforge generation (True) or just merge custom
+        headers with impersonate's approximate defaults (False).
 
         Args:
             url: Request URL.
             method: HTTP method.
             headers: Custom headers.
-            stealth: Whether to apply browser fingerprinting.
+            stealth: Whether to apply full browser fingerprinting.
 
         Returns:
             Final headers dict.
         """
-        if not stealth:
-            return headers or {}
-
+        # Always generate browserforge headers for curl backend since
+        # impersonate is always active and injects similar headers.
+        # This ensures debug output accurately reflects what's sent.
         generator = self._get_header_generator()
         if generator:
             try:
@@ -207,6 +214,7 @@ class CurlBackend:
             TransportError: On connection/transport errors.
         """
         final_headers = self._prepare_headers(url, method, headers, stealth)
+        self._last_prepared_headers = final_headers
 
         try:
             session = self._get_sync_session()
@@ -272,6 +280,7 @@ class CurlBackend:
             TransportError: On connection/transport errors.
         """
         final_headers = self._prepare_headers(url, method, headers, stealth)
+        self._last_prepared_headers = final_headers
 
         try:
             session = self._get_async_session()

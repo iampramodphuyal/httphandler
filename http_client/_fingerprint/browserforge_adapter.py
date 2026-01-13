@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from .headers import merge_headers_case_insensitive
+
 # Try to import browserforge
 try:
     from browserforge.headers import HeaderGenerator as BFHeaderGenerator
@@ -119,9 +121,8 @@ class BrowserForgeGenerator:
         else:
             result = dict(generated)
 
-        # Merge custom headers (they take precedence)
-        if headers:
-            result.update(headers)
+        # Merge custom headers (case-insensitive override)
+        merge_headers_case_insensitive(result, headers)
 
         return result
 
@@ -178,30 +179,47 @@ class BrowserForgeHeaderGenerator:
     HeaderGenerator class.
     """
 
+    # Desktop platforms only (no mobile) - equal distribution
+    DESKTOP_PLATFORMS = ["windows", "macos", "linux"]
+
     def __init__(
         self,
         browser: str | None = "chrome",
-        os: str | None = None,
+        os: str | list[str] | None = None,
     ):
         """Initialize header generator.
 
         Args:
             browser: Browser type - "chrome", "firefox", "safari", "edge"
-            os: Operating system - "windows", "macos", "linux"
+            os: Operating system(s) - "windows", "macos", "linux" or list.
+                Defaults to desktop platforms with equal distribution.
         """
         if not BROWSERFORGE_AVAILABLE:
             raise ImportError("browserforge is not installed")
 
         self._browser = browser
-        self._os = os
-        # Only pass non-None parameters to avoid browserforge bugs
-        kwargs = {}
-        if browser is not None:
-            kwargs['browser'] = browser
-        if os is not None:
-            kwargs['os'] = os
-        self._gen = BFHeaderGenerator(**kwargs)
+        # Default to desktop platforms if not specified
+        self._os_options = os if os is not None else self.DESKTOP_PLATFORMS
         self._last_referer: str | None = None
+
+    def _create_generator(self, os_choice: str | None = None):
+        """Create a new browserforge generator with specified OS."""
+        import random
+
+        # Pick random OS from options for equal distribution
+        if os_choice is None:
+            if isinstance(self._os_options, list):
+                os_choice = random.choice(self._os_options)
+            else:
+                os_choice = self._os_options
+
+        kwargs = {}
+        if self._browser is not None:
+            kwargs['browser'] = self._browser
+        if os_choice is not None:
+            kwargs['os'] = os_choice
+
+        return BFHeaderGenerator(**kwargs)
 
     def generate(
         self,
@@ -225,8 +243,9 @@ class BrowserForgeHeaderGenerator:
         Returns:
             Dict of headers.
         """
-        # Generate fresh headers
-        generated = self._gen.generate()
+        # Generate fresh headers with random OS for equal distribution
+        gen = self._create_generator()
+        generated = gen.generate()
         # Handle both old API (object with .headers) and new API (direct dict)
         if hasattr(generated, 'headers'):
             headers = dict(generated.headers)
@@ -238,9 +257,8 @@ class BrowserForgeHeaderGenerator:
         if effective_referer:
             headers["Referer"] = effective_referer
 
-        # Merge custom headers
-        if custom_headers:
-            headers.update(custom_headers)
+        # Merge custom headers (case-insensitive override)
+        merge_headers_case_insensitive(headers, custom_headers)
 
         # Update referer chain
         self._last_referer = url

@@ -278,6 +278,12 @@ class HTTPClient:
 
             # Populate response debug info
             if debug_info:
+                # Update with actual headers used (after browserforge processing)
+                actual_headers = backend_impl._last_prepared_headers
+                if actual_headers:
+                    debug_info.request_headers = dict(actual_headers)
+                    debug_info.request_headers_order = list(actual_headers.keys())
+
                 debug_info.status_code = response.status_code
                 debug_info.final_url = response.url
                 debug_info.response_headers = dict(response.headers)
@@ -595,6 +601,12 @@ class HTTPClient:
 
             # Populate response debug info
             if debug_info:
+                # Update with actual headers used (after browserforge processing)
+                actual_headers = backend_impl._last_prepared_headers
+                if actual_headers:
+                    debug_info.request_headers = dict(actual_headers)
+                    debug_info.request_headers_order = list(actual_headers.keys())
+
                 debug_info.status_code = response.status_code
                 debug_info.final_url = response.url
                 debug_info.response_headers = dict(response.headers)
