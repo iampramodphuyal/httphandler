@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from datetime import datetime
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 from ._backends import CURL_AVAILABLE, CurlBackend, HttpxBackend
 from ._cookies import CookieStore
+from ._debug import DebugInfo, DebugOutput
 from ._proxy import GenericProvider, ProxyManager, ProxyProvider
 from .models import Response
 
@@ -52,6 +54,8 @@ class HTTPClient:
         follow_redirects: bool = True,
         profile: str = "chrome_120",
         http_version: Literal["1.1", "2"] | None = None,
+        verbose: bool = False,
+        debug_callback: Callable[[DebugInfo], None] | None = None,
     ):
         """Initialize HTTPClient.
 
@@ -65,6 +69,8 @@ class HTTPClient:
             follow_redirects: Whether to follow redirects.
             profile: Browser profile for curl stealth mode.
             http_version: HTTP version to use ("1.1" or "2"). None for auto.
+            verbose: Enable verbose debug output to stderr.
+            debug_callback: Optional callback for programmatic debug capture.
         """
         self._default_backend = default_backend
         self._timeout = timeout
@@ -90,6 +96,9 @@ class HTTPClient:
 
         # Proxy manager (lazy-initialized)
         self._proxy_manager: ProxyManager | None = None
+
+        # Debug/verbose mode
+        self._debug = DebugOutput(enabled=verbose, callback=debug_callback)
 
     def _get_httpx_backend(self) -> HttpxBackend:
         """Get or create httpx backend."""
@@ -213,6 +222,23 @@ class HTTPClient:
         final_timeout = timeout or self._timeout
         final_proxy = proxy or self.get_current_proxy()
 
+        # Prepare debug info if verbose mode is enabled
+        debug_info: DebugInfo | None = None
+        if self._debug.enabled or self._debug.callback:
+            debug_info = DebugInfo(
+                timestamp=datetime.now(),
+                method=method,
+                url=url,
+                backend=backend_name,
+                stealth_mode=stealth,
+                profile=self._profile if stealth else None,
+                http_version=self._http_version or "auto",
+                request_headers=dict(final_headers),
+                request_headers_order=list(final_headers.keys()),
+                cookies_sent=dict(final_cookies) if final_cookies else {},
+                proxy_used=final_proxy,
+            )
+
         try:
             if backend_name == "curl":
                 backend_impl = self._get_curl_backend()
@@ -228,6 +254,9 @@ class HTTPClient:
                     proxy=final_proxy,
                     stealth=stealth,
                 )
+                # Capture impersonate info for curl backend
+                if debug_info:
+                    debug_info.impersonate = backend_impl._impersonate
             else:
                 backend_impl = self._get_httpx_backend()
                 response = backend_impl.request_sync(
@@ -247,11 +276,31 @@ class HTTPClient:
             if self._proxy_manager and self._proxy_manager.has_proxy:
                 self._proxy_manager.record_success(final_proxy, response.elapsed)
 
+            # Populate response debug info
+            if debug_info:
+                debug_info.status_code = response.status_code
+                debug_info.final_url = response.url
+                debug_info.response_headers = dict(response.headers)
+                debug_info.cookies_received = dict(response.cookies)
+                debug_info.elapsed = response.elapsed
+                debug_info.content_length = len(response.content)
+                try:
+                    debug_info.content_preview = response.text[:500] if response.text else None
+                except Exception:
+                    debug_info.content_preview = None
+
         except Exception as e:
             # Record failure for proxy health tracking
             if self._proxy_manager and self._proxy_manager.has_proxy:
                 self._proxy_manager.record_failure(final_proxy, str(e))
+            # Capture error in debug info
+            if debug_info:
+                debug_info.error = str(e)
             raise
+        finally:
+            # Log debug info
+            if debug_info:
+                self._debug.log_request(debug_info)
 
         self._store_cookies(url, response.cookies)
         self._last_response = response
@@ -488,6 +537,23 @@ class HTTPClient:
         final_timeout = timeout or self._timeout
         final_proxy = proxy or self.get_current_proxy()
 
+        # Prepare debug info if verbose mode is enabled
+        debug_info: DebugInfo | None = None
+        if self._debug.enabled or self._debug.callback:
+            debug_info = DebugInfo(
+                timestamp=datetime.now(),
+                method=method,
+                url=url,
+                backend=backend_name,
+                stealth_mode=stealth,
+                profile=self._profile if stealth else None,
+                http_version=self._http_version or "auto",
+                request_headers=dict(final_headers),
+                request_headers_order=list(final_headers.keys()),
+                cookies_sent=dict(final_cookies) if final_cookies else {},
+                proxy_used=final_proxy,
+            )
+
         try:
             if backend_name == "curl":
                 backend_impl = self._get_curl_backend()
@@ -503,6 +569,9 @@ class HTTPClient:
                     proxy=final_proxy,
                     stealth=stealth,
                 )
+                # Capture impersonate info for curl backend
+                if debug_info:
+                    debug_info.impersonate = backend_impl._impersonate
             else:
                 backend_impl = self._get_httpx_backend()
                 response = await backend_impl.request_async(
@@ -524,11 +593,31 @@ class HTTPClient:
                     final_proxy, response.elapsed
                 )
 
+            # Populate response debug info
+            if debug_info:
+                debug_info.status_code = response.status_code
+                debug_info.final_url = response.url
+                debug_info.response_headers = dict(response.headers)
+                debug_info.cookies_received = dict(response.cookies)
+                debug_info.elapsed = response.elapsed
+                debug_info.content_length = len(response.content)
+                try:
+                    debug_info.content_preview = response.text[:500] if response.text else None
+                except Exception:
+                    debug_info.content_preview = None
+
         except Exception as e:
             # Record failure for proxy health tracking
             if self._proxy_manager and self._proxy_manager.has_proxy:
                 await self._proxy_manager.record_failure_async(final_proxy, str(e))
+            # Capture error in debug info
+            if debug_info:
+                debug_info.error = str(e)
             raise
+        finally:
+            # Log debug info
+            if debug_info:
+                self._debug.log_request(debug_info)
 
         await self._store_cookies_async(url, response.cookies)
         self._last_response = response
@@ -793,6 +882,50 @@ class HTTPClient:
     def remove_default_header(self, name: str) -> None:
         """Remove a default header."""
         self._default_headers.pop(name, None)
+
+    # ========== Verbose/Debug Mode ==========
+
+    def verbose(self, enabled: bool = True) -> "HTTPClient":
+        """Enable or disable verbose debug output.
+
+        When enabled, prints detailed request/response information to stderr
+        including headers, cookies, proxy, timing, and TLS info.
+
+        Args:
+            enabled: True to enable verbose output, False to disable.
+
+        Returns:
+            Self for method chaining.
+
+        Example:
+            client.verbose(True).get("https://example.com")
+        """
+        self._debug.enabled = enabled
+        return self
+
+    @property
+    def is_verbose(self) -> bool:
+        """Check if verbose mode is enabled."""
+        return self._debug.enabled
+
+    def set_debug_callback(
+        self, callback: Callable[[DebugInfo], None] | None
+    ) -> None:
+        """Set callback for programmatic debug capture.
+
+        The callback receives a DebugInfo object for each request/response
+        cycle, allowing custom logging, metrics, or analysis.
+
+        Args:
+            callback: Function to call with DebugInfo, or None to disable.
+
+        Example:
+            def my_handler(info: DebugInfo):
+                print(f"{info.method} {info.url} -> {info.status_code}")
+
+            client.set_debug_callback(my_handler)
+        """
+        self._debug.callback = callback
 
     # ========== Proxy Management ==========
 

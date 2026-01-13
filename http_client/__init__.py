@@ -29,6 +29,7 @@ Async usage:
 """
 
 from .client import HTTPClient
+from ._debug import DebugInfo
 from .models import (
     AllProxiesFailed,
     BatchResult,
@@ -55,6 +56,8 @@ __version__ = "0.5.7"
 __all__ = [
     # Client
     "HTTPClient",
+    # Debug
+    "DebugInfo",
     # Models
     "Request",
     "Response",
