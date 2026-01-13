@@ -37,3 +37,9 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Test files (local only)
+test_aetna*.txt
+test_aetna*.py
+aetna_output.txt
+uv.lock
